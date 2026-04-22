@@ -15,8 +15,8 @@ from pathlib import Path
 
 st.set_page_config(page_title="KC Options Dashboard", layout="wide")
 
-PARQUET_PATH = Path(r"C:\Users\virat.arya\ETG\SoftsDatabase - Documents\Database\Hardmine\Non Fundamental\Options\KC_options_ice.parquet")
-ATM_JSON     = Path(r"C:\Users\virat.arya\ETG\SoftsDatabase - Documents\Database\Hardmine\Non Fundamental\Options\atm.json")
+PARQUET_PATH = Path(__file__).parent / "KC_options_ice.parquet"
+ATM_JSON     = Path(__file__).parent / "atm.json"
 
 MONTH_NAMES = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
                7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
@@ -43,8 +43,8 @@ def load_atm():
 
 try:
     df = load_data()
-except FileNotFoundError:
-    st.error("KC_options_ice.parquet not found. Run kc_options_ice_ingest.py first.")
+except Exception as e:
+    st.error(f"Failed to load data: {e}")
     st.stop()
 
 atm_data = load_atm()
