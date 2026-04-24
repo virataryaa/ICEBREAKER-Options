@@ -180,10 +180,8 @@ def build() -> pd.DataFrame:
     new_df = pd.concat(parts, ignore_index=True)
     new_df = new_df.rename(columns={"Time": "date"})
 
-    # Live options only
     new_df["oi"] = pd.to_numeric(new_df["oi"], errors="coerce")
-    new_df = new_df[new_df["oi"] > 0].copy()
-    new_df = new_df.dropna(subset=["settle"])
+    new_df = new_df.dropna(subset=["settle"])  # keep all priced strikes; Min OI filter is in dashboard
 
     # Parse symbol metadata
     meta_cache: dict = {}
