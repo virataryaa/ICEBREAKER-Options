@@ -1,7 +1,7 @@
 """
 app.py — Soft Options Dashboard (ICE Connect data)
 ===================================================
-Commodities : KC (Coffee C) | CC (Cocoa)
+Commodities : KC (Coffee C) | CC (Cocoa) | SB (Sugar #11)
 Sidebar     : Old Date + New Date (shared)
 Each Tab    : Min OI + ATM info + butterfly tables
 Inner Tab 1 : OI Change (left) | Volume (right)
@@ -39,6 +39,12 @@ def load_cc():
     df["date"] = pd.to_datetime(df["date"])
     return df
 
+@st.cache_data(ttl=1800)
+def load_sb():
+    df = pd.read_parquet(DB_PATH / "SB_options_ice.parquet")
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
 def load_atm():
     try:
         with open(ATM_JSON) as f:
@@ -56,13 +62,13 @@ def _try_load(fn, name):
 
 df_kc    = _try_load(load_kc, "KC")
 df_cc    = _try_load(load_cc, "CC")
+df_sb    = _try_load(load_sb, "SB")
 atm_data = load_atm()
 
 all_dates = set()
-if not df_kc.empty:
-    all_dates.update(df_kc["date"].dt.date.unique())
-if not df_cc.empty:
-    all_dates.update(df_cc["date"].dt.date.unique())
+for _df in [df_kc, df_cc, df_sb]:
+    if not _df.empty:
+        all_dates.update(_df["date"].dt.date.unique())
 available_dates = sorted(all_dates)
 
 
@@ -306,6 +312,13 @@ def _ric_cc(strike, month, year, opt):
     cp  = "C" if opt == "Call" else "P"
     return f"CC {mc}{yy}{cp}{int(round(strike / 22.046))}"
 
+def _ric_sb(strike, month, year, opt):
+    """Strike stored as cts/lb; multiply by 100 for symbol integer."""
+    mc  = MONTH_TO_CODE[month]
+    yy  = f"{year % 100:02d}"
+    cp  = "C" if opt == "Call" else "P"
+    return f"SB {mc}{yy}{cp}{int(round(strike * 100))}"
+
 
 # ── Commodity tab renderer ─────────────────────────────────────────────────────
 def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
@@ -453,10 +466,11 @@ st.caption(
     f"New Date: **{new_date.strftime('%d %b %Y')}**"
 )
 
-tab_kc, tab_cc = st.tabs(["KC — Coffee C", "CC — Cocoa"])
+tab_kc, tab_cc, tab_sb = st.tabs(["KC — Coffee C", "CC — Cocoa", "SB — Sugar #11"])
 
 atm_kc = atm_data.get("KC")
 atm_cc = atm_data.get("CC")
+atm_sb = atm_data.get("SB")
 
 with tab_kc:
     atm_kc_lbl = (f"{int(atm_kc) if atm_kc == int(atm_kc) else atm_kc}"
@@ -483,4 +497,17 @@ with tab_cc:
         key_prefix="cc",
         title="CC",
         ric_fn=_ric_cc,
+    )
+
+with tab_sb:
+    atm_sb_lbl = f"{atm_sb:.2f}" if atm_sb is not None else "—"
+    render_commodity_tab(
+        df=df_sb,
+        atm_val=atm_sb,
+        atm_label=atm_sb_lbl,
+        old_date=old_date,
+        new_date=new_date,
+        key_prefix="sb",
+        title="SB",
+        ric_fn=_ric_sb,
     )
