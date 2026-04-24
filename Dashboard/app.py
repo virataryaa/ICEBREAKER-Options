@@ -320,14 +320,15 @@ items = [
     ("C/P OI Ratio",    cp_oi),
     ("C/P Vol Ratio",   cp_vol),
 ]
-st.html(
+st.markdown(
     '<div style="display:flex;gap:28px;padding:8px 0 14px;border-bottom:1px solid #eee;flex-wrap:wrap">'
     + "".join(
         f'<div><div style="font-size:9px;color:#888;letter-spacing:.07em;text-transform:uppercase;margin-bottom:2px">{lbl}</div>'
         f'<div style="font-size:14px;font-weight:600;color:#1a1a2e">{val}</div></div>'
         for lbl, val in items
     )
-    + '</div>'
+    + '</div>',
+    unsafe_allow_html=True
 )
 
 tab1, tab2 = st.tabs(["OI Change + Volume", "Px Change"])
@@ -337,10 +338,10 @@ with tab1:
     cl, cr = st.columns(2)
     with cl:
         st.markdown("**OI Change**")
-        st.html(butterfly_html(call_oi, put_oi, atm_kc, oi_color, fmt="{:.0f}", footer=True))
+        st.markdown(butterfly_html(call_oi, put_oi, atm_kc, oi_color, fmt="{:.0f}", footer=True), unsafe_allow_html=True)
     with cr:
         st.markdown("**Volume**")
-        st.html(butterfly_html(call_vol, put_vol, atm_kc, vol_color, fmt="{:.0f}", footer=True))
+        st.markdown(butterfly_html(call_vol, put_vol, atm_kc, vol_color, fmt="{:.0f}", footer=True), unsafe_allow_html=True)
 
     with st.expander("Drill Down — Single Option Time Series"):
         dc1, dc2, dc3 = st.columns(3)
@@ -395,9 +396,9 @@ with tab2:
     pc1, pc2 = st.columns(2)
     with pc1:
         st.markdown("**Px Change**")
-        st.html(butterfly_html(call_px, put_px, atm_kc, px_color,
-                               fmt="{:.2f}", footer=False))
+        st.markdown(butterfly_html(call_px, put_px, atm_kc, px_color,
+                               fmt="{:.2f}", footer=False), unsafe_allow_html=True)
     with pc2:
         st.markdown("**% Change**")
-        st.html(butterfly_html(call_pct, put_pct, atm_kc, px_color,
-                               fmt="{:.1f}", footer=False, sfx="%"))
+        st.markdown(butterfly_html(call_pct, put_pct, atm_kc, px_color,
+                               fmt="{:.1f}", footer=False, sfx="%"), unsafe_allow_html=True)
