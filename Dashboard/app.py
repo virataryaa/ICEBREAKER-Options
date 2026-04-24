@@ -202,14 +202,17 @@ _CSS = """<style>
 
 
 def butterfly_html(cpiv, ppiv, atm, cfn, month_keys, fmt="{:.0f}",
-                   footer=True, sfx="", title="", atm_tol=None):
+                   footer=True, sfx="", title="", atm_tol=None, fixed_strikes=None):
     ccols = list(reversed(month_keys))
     pcols = list(month_keys)
 
-    strikes_set = set()
-    if not cpiv.empty: strikes_set.update(cpiv.index.tolist())
-    if not ppiv.empty: strikes_set.update(ppiv.index.tolist())
-    strikes = sorted(strikes_set, reverse=True)
+    if fixed_strikes is not None:
+        strikes = list(fixed_strikes)  # already sorted desc by caller
+    else:
+        strikes_set = set()
+        if not cpiv.empty: strikes_set.update(cpiv.index.tolist())
+        if not ppiv.empty: strikes_set.update(ppiv.index.tolist())
+        strikes = sorted(strikes_set, reverse=True)
 
     if atm_tol is None:
         if len(strikes) >= 2:
@@ -363,13 +366,15 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
             st.markdown("**OI Change**")
             st.markdown(
                 butterfly_html(call_oi, put_oi, atm_val, oi_color, month_keys,
-                               fmt="{:.0f}", footer=True, title=title),
+                               fmt="{:.0f}", footer=True, title=title,
+                               fixed_strikes=all_strikes),
                 unsafe_allow_html=True)
         with cr:
             st.markdown("**Volume**")
             st.markdown(
                 butterfly_html(call_vol, put_vol, atm_val, vol_color, month_keys,
-                               fmt="{:.0f}", footer=True, title=title),
+                               fmt="{:.0f}", footer=True, title=title,
+                               fixed_strikes=all_strikes),
                 unsafe_allow_html=True)
 
         with st.expander("Drill Down — Single Option Time Series"):
@@ -429,13 +434,15 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
             st.markdown("**Px Change**")
             st.markdown(
                 butterfly_html(call_px, put_px, atm_val, px_color, month_keys,
-                               fmt="{:.2f}", footer=False, title=title),
+                               fmt="{:.2f}", footer=False, title=title,
+                               fixed_strikes=all_strikes),
                 unsafe_allow_html=True)
         with pc2:
             st.markdown("**% Change**")
             st.markdown(
                 butterfly_html(call_pct, put_pct, atm_val, px_color, month_keys,
-                               fmt="{:.1f}", footer=False, sfx="%", title=title),
+                               fmt="{:.1f}", footer=False, sfx="%", title=title,
+                               fixed_strikes=all_strikes),
                 unsafe_allow_html=True)
 
 
