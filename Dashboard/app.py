@@ -189,7 +189,8 @@ _CSS = """<style>
 .bft td{text-align:right;border:1px solid #f0f0f0;color:#1a1a2e}
 .bft .sc{text-align:center;font-weight:700;font-size:11px;color:#1a1a2e;
          background:#f5f5f5;border-left:2px solid #ccc;border-right:2px solid #ccc}
-.bft .sc-atm{background:#1a1a2e!important;color:#fff!important}
+.bft .sc-atm{background:#f59e0b!important;color:#1a1a2e!important;font-weight:900!important}
+.bft tr.atm-row td{border-top:2px solid #f59e0b!important;border-bottom:2px solid #f59e0b!important}
 .bft tfoot td{font-weight:700;border-top:2px solid #bbb}
 .bft tfoot .sc{font-size:9px;color:#888;background:#efefef}
 .ch{background:#dce8fb;color:#1a56cc}
@@ -247,13 +248,14 @@ def butterfly_html(cpiv, ppiv, atm, cfn, fmt="{:.0f}", footer=True, sfx="", titl
 
     body = []
     for s in strikes:
-        is_atm = atm is not None and abs(s - atm) < 1.25
-        sc  = "sc sc-atm" if is_atm else "sc"
-        lbl = int(s) if s == int(s) else s
+        is_atm  = atm is not None and abs(s - atm) < 1.25
+        sc      = "sc sc-atm" if is_atm else "sc"
+        tr_cls  = ' class="atm-row"' if is_atm else ""
+        lbl     = int(s) if s == int(s) else s
         row = ("".join(td(cv(cpiv, s, mk)) for mk in ccols)
                + f'<td class="{sc}">{lbl}</td>'
                + "".join(td(cv(ppiv, s, mk)) for mk in pcols))
-        body.append(f"<tr>{row}</tr>")
+        body.append(f"<tr{tr_cls}>{row}</tr>")
 
     ft = ""
     if footer:
