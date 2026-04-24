@@ -1,10 +1,11 @@
 """
-app.py — KC Options Dashboard (ICE Connect data)
-=================================================
-Tab 1 : OI Change (left) | Volume (right)  — fully separate side by side
-Tab 2 : Px Change (left) | % Change (right)
-Top   : compact summary row
-Below : collapsible drill-down + aggregate time-series
+app.py — Soft Options Dashboard (ICE Connect data)
+===================================================
+Commodities : KC (Coffee C) | CC (Cocoa)
+Sidebar     : Old Date + New Date (shared)
+Each Tab    : Min OI + ATM info + butterfly tables
+Inner Tab 1 : OI Change (left) | Volume (right)
+Inner Tab 2 : Px Change (left) | % Change (right)
 """
 
 import json
@@ -13,25 +14,30 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-st.set_page_config(page_title="KC Options Dashboard", layout="wide")
+st.set_page_config(page_title="Options Dashboard", layout="wide")
 
-PARQUET_PATH = Path(__file__).parent.parent / "Database" / "KC_options_ice.parquet"
-ATM_JSON     = Path(__file__).parent / "atm.json"
+DB_PATH  = Path(__file__).parent.parent / "Database"
+ATM_JSON = Path(__file__).parent / "atm.json"
 
-MONTH_NAMES = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
-               7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
-CALL_CODES = {1:"A",2:"B",3:"C",4:"D",5:"E",6:"F",7:"G",8:"H",9:"I",10:"J",11:"K",12:"L"}
-PUT_CODES  = {1:"M",2:"N",3:"O",4:"P",5:"Q",6:"R",7:"S",8:"T",9:"U",10:"V",11:"W",12:"X"}
+MONTH_NAMES   = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
+                 7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
+CALL_CODES    = {1:"A",2:"B",3:"C",4:"D",5:"E",6:"F",7:"G",8:"H",9:"I",10:"J",11:"K",12:"L"}
+PUT_CODES     = {1:"M",2:"N",3:"O",4:"P",5:"Q",6:"R",7:"S",8:"T",9:"U",10:"V",11:"W",12:"X"}
 MONTH_TO_CODE = {1:"F",2:"G",3:"H",4:"J",5:"K",6:"M",7:"N",8:"Q",9:"U",10:"V",11:"X",12:"Z"}
 
 
-# ── Data ───────────────────────────────────────────────────────────────────────
+# ── Data loaders ───────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800)
-def load_data():
-    df = pd.read_parquet(PARQUET_PATH)
+def load_kc():
+    df = pd.read_parquet(DB_PATH / "KC_options_ice.parquet")
     df["date"] = pd.to_datetime(df["date"])
     return df
 
+@st.cache_data(ttl=1800)
+def load_cc():
+    df = pd.read_parquet(DB_PATH / "CC_options_ice.parquet")
+    df["date"] = pd.to_datetime(df["date"])
+    return df
 
 def load_atm():
     try:
@@ -40,35 +46,29 @@ def load_atm():
     except Exception:
         return {}
 
+def _try_load(fn, name):
+    try:
+        return fn()
+    except Exception as e:
+        st.warning(f"Could not load {name} data: {e}")
+        return pd.DataFrame()
 
-try:
-    df = load_data()
-except Exception as e:
-    st.error(f"Failed to load data: {e}")
-    st.stop()
 
+df_kc    = _try_load(load_kc, "KC")
+df_cc    = _try_load(load_cc, "CC")
 atm_data = load_atm()
-atm_kc   = atm_data.get("KC")
-atm_date = atm_data.get("updated")
 
-available_dates = sorted(df["date"].dt.date.unique())
-all_strikes     = sorted(df["strike"].unique(), reverse=True)
-
-month_keys = (
-    df[["expiry_month", "expiry_year"]]
-    .drop_duplicates()
-    .sort_values(["expiry_year", "expiry_month"])
-    .apply(lambda r: (int(r.expiry_month), int(r.expiry_year)), axis=1)
-    .tolist()
-)
+all_dates = set()
+if not df_kc.empty:
+    all_dates.update(df_kc["date"].dt.date.unique())
+if not df_cc.empty:
+    all_dates.update(df_cc["date"].dt.date.unique())
+available_dates = sorted(all_dates)
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("KC Options")
-    st.caption(f"Data: {df['date'].min().date()} to {df['date'].max().date()}")
-    if atm_kc:
-        st.caption(f"ATM (KCc2): **{atm_kc}** as of {atm_date}")
+    st.title("Options Dashboard")
     st.divider()
     old_date = st.selectbox("Old Date", available_dates,
                              index=max(0, len(available_dates) - 10),
@@ -78,34 +78,36 @@ with st.sidebar:
                              format_func=lambda d: d.strftime("%d %b %Y"))
     if old_date == new_date:
         st.warning("Old Date and New Date are the same.")
-    st.divider()
-    min_oi = st.number_input("Min OI filter (on New Date)", value=0, min_value=0, step=10)
 
 
-# ── Pivot helpers ──────────────────────────────────────────────────────────────
-def _meta(opt):
+# ── Pivot helpers (all parameterised) ─────────────────────────────────────────
+def _month_keys(df):
+    return (df[["expiry_month", "expiry_year"]]
+            .drop_duplicates()
+            .sort_values(["expiry_year", "expiry_month"])
+            .apply(lambda r: (int(r.expiry_month), int(r.expiry_year)), axis=1)
+            .tolist())
+
+def _meta(df, opt):
     return (df[df["option_type"] == opt]
             [["ric", "strike", "expiry_month", "expiry_year"]]
             .drop_duplicates()
             .assign(mk=lambda x: list(zip(x.expiry_month.astype(int), x.expiry_year.astype(int))))
             .set_index("ric"))
 
-
-def _clean(pivot):
+def _clean(pivot, month_keys):
     if pivot.empty:
         return pivot
     pivot = pivot.reindex(columns=month_keys)
     return pivot.apply(lambda c: pd.to_numeric(c, errors="coerce")).astype(float)
 
-
-def _valid(opt):
+def _valid(df, opt, new_date, min_oi):
     if min_oi <= 0:
         return None
     d2 = df[(df["date"].dt.date == new_date) & (df["option_type"] == opt)][["ric", "oi"]]
     return d2[pd.to_numeric(d2["oi"], errors="coerce") >= min_oi]["ric"]
 
-
-def _change_pivot(opt, src):
+def _change_pivot(df, month_keys, opt, src, old_date, new_date, min_oi):
     d1 = (df[(df["date"].dt.date == old_date) & (df["option_type"] == opt)]
           [["ric", src]].set_index("ric"))
     d2 = (df[(df["date"].dt.date == new_date) & (df["option_type"] == opt)]
@@ -113,35 +115,35 @@ def _change_pivot(opt, src):
     merged = d1.join(d2, how="outer", lsuffix="_1", rsuffix="_2")
     merged["val"] = (pd.to_numeric(merged[src + "_2"], errors="coerce")
                      - pd.to_numeric(merged[src + "_1"], errors="coerce"))
-    v = _valid(opt)
+    v = _valid(df, opt, new_date, min_oi)
     if v is not None:
         merged = merged[merged.index.isin(v)]
-    meta = _meta(opt)
+    meta = _meta(df, opt)
     result = merged.join(meta[["strike", "mk"]]).dropna(subset=["strike"])
     result = result[result["mk"].notna()]
     piv = result.pivot_table(index="strike", columns="mk", values="val", aggfunc="first")
-    return _clean(piv).sort_index(ascending=False)
+    return _clean(piv, month_keys).sort_index(ascending=False)
 
+def get_oi_pivot(df, month_keys, opt, old_date, new_date, min_oi):
+    return _change_pivot(df, month_keys, opt, "oi", old_date, new_date, min_oi)
 
-def get_oi_pivot(opt):  return _change_pivot(opt, "oi")
-def get_px_pivot(opt):  return _change_pivot(opt, "settle")
+def get_px_pivot(df, month_keys, opt, old_date, new_date, min_oi):
+    return _change_pivot(df, month_keys, opt, "settle", old_date, new_date, min_oi)
 
-
-def get_vol_pivot(opt):
+def get_vol_pivot(df, month_keys, opt, old_date, new_date, min_oi):
     lo, hi = min(old_date, new_date), max(old_date, new_date)
     sub = df[(df["option_type"] == opt)
              & (df["date"].dt.date >= lo)
              & (df["date"].dt.date <= hi)].copy()
-    v = _valid(opt)
+    v = _valid(df, opt, new_date, min_oi)
     if v is not None:
         sub = sub[sub["ric"].isin(v)]
     sub["mk"] = list(zip(sub["expiry_month"].astype(int), sub["expiry_year"].astype(int)))
     sub["volume"] = pd.to_numeric(sub["volume"], errors="coerce")
     piv = sub.groupby(["strike", "mk"])["volume"].sum().unstack("mk")
-    return _clean(piv).sort_index(ascending=False)
+    return _clean(piv, month_keys).sort_index(ascending=False)
 
-
-def get_pct_pivot(opt):
+def get_pct_pivot(df, month_keys, opt, old_date, new_date, min_oi):
     d1 = (df[(df["date"].dt.date == old_date) & (df["option_type"] == opt)]
           [["ric", "settle"]].set_index("ric"))
     d2 = (df[(df["date"].dt.date == new_date) & (df["option_type"] == opt)]
@@ -150,14 +152,14 @@ def get_pct_pivot(opt):
     s1 = pd.to_numeric(merged["settle_1"], errors="coerce")
     s2 = pd.to_numeric(merged["settle_2"], errors="coerce")
     merged["val"] = ((s2 - s1) / s1.abs()) * 100
-    v = _valid(opt)
+    v = _valid(df, opt, new_date, min_oi)
     if v is not None:
         merged = merged[merged.index.isin(v)]
-    meta = _meta(opt)
+    meta = _meta(df, opt)
     result = merged.join(meta[["strike", "mk"]]).dropna(subset=["strike"])
     result = result[result["mk"].notna()]
     piv = result.pivot_table(index="strike", columns="mk", values="val", aggfunc="first")
-    return _clean(piv).sort_index(ascending=False)
+    return _clean(piv, month_keys).sort_index(ascending=False)
 
 
 # ── Colors ─────────────────────────────────────────────────────────────────────
@@ -199,7 +201,8 @@ _CSS = """<style>
 </style>"""
 
 
-def butterfly_html(cpiv, ppiv, atm, cfn, fmt="{:.0f}", footer=True, sfx="", title="KC"):
+def butterfly_html(cpiv, ppiv, atm, cfn, month_keys, fmt="{:.0f}",
+                   footer=True, sfx="", title="", atm_tol=None):
     ccols = list(reversed(month_keys))
     pcols = list(month_keys)
 
@@ -207,6 +210,13 @@ def butterfly_html(cpiv, ppiv, atm, cfn, fmt="{:.0f}", footer=True, sfx="", titl
     if not cpiv.empty: strikes_set.update(cpiv.index.tolist())
     if not ppiv.empty: strikes_set.update(ppiv.index.tolist())
     strikes = sorted(strikes_set, reverse=True)
+
+    if atm_tol is None:
+        if len(strikes) >= 2:
+            gaps = [abs(strikes[i] - strikes[i+1]) for i in range(len(strikes)-1)]
+            atm_tol = min(gaps) * 0.6
+        else:
+            atm_tol = 1.0
 
     def _flat(p):
         if p.empty: return np.array([], dtype=float)
@@ -248,10 +258,10 @@ def butterfly_html(cpiv, ppiv, atm, cfn, fmt="{:.0f}", footer=True, sfx="", titl
 
     body = []
     for s in strikes:
-        is_atm  = atm is not None and abs(s - atm) < 1.25
-        sc      = "sc sc-atm" if is_atm else "sc"
-        tr_cls  = ' class="atm-row"' if is_atm else ""
-        lbl     = int(s) if s == int(s) else s
+        is_atm = atm is not None and abs(s - atm) < atm_tol
+        sc     = "sc sc-atm" if is_atm else "sc"
+        tr_cls = ' class="atm-row"' if is_atm else ""
+        lbl    = int(s) if s == int(s) else s
         row = ("".join(td(cv(cpiv, s, mk)) for mk in ccols)
                + f'<td class="{sc}">{lbl}</td>'
                + "".join(td(cv(ppiv, s, mk)) for mk in pcols))
@@ -274,131 +284,196 @@ def butterfly_html(cpiv, ppiv, atm, cfn, fmt="{:.0f}", footer=True, sfx="", titl
             f'{ft}<tbody>{"".join(body)}</tbody></table></div>')
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Misc helpers ───────────────────────────────────────────────────────────────
 def _tot(piv): return float(piv.sum(skipna=True).sum()) if not piv.empty else 0.0
 def _fn(v, f="{:,.0f}"):
     try: return f.format(float(v))
     except: return "—"
 
-def _ric(strike, month, year, opt):
-    """Build ICE option symbol: KC M26C2850"""
+def _ric_kc(strike, month, year, opt):
     mc  = MONTH_TO_CODE[month]
     yy  = f"{year % 100:02d}"
     cp  = "C" if opt == "Call" else "P"
-    raw = int(round(strike * 10))
-    return f"KC {mc}{yy}{cp}{raw}"
+    return f"KC {mc}{yy}{cp}{int(round(strike * 10))}"
+
+def _ric_cc(strike, month, year, opt):
+    """Strike stored as $/mt; convert back to $/cwt integer for the symbol."""
+    mc  = MONTH_TO_CODE[month]
+    yy  = f"{year % 100:02d}"
+    cp  = "C" if opt == "Call" else "P"
+    return f"CC {mc}{yy}{cp}{int(round(strike / 22.046))}"
 
 
-# ── Compute all pivots up-front ────────────────────────────────────────────────
-call_oi  = get_oi_pivot("Call")
-put_oi   = get_oi_pivot("Put")
-call_vol = get_vol_pivot("Call")
-put_vol  = get_vol_pivot("Put")
+# ── Commodity tab renderer ─────────────────────────────────────────────────────
+def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
+                         key_prefix, title, ric_fn):
+    if df.empty:
+        st.info(f"No data available for {title}.")
+        return
 
-c_oi  = _tot(call_oi);  p_oi  = _tot(put_oi)
-c_vol = _tot(call_vol); p_vol = _tot(put_vol)
-cp_oi  = f"{abs(c_oi/p_oi):.2f}"   if p_oi  != 0 else "—"
-cp_vol = f"{c_vol/p_vol:.2f}"       if p_vol > 0  else "—"
+    month_keys  = _month_keys(df)
+    all_strikes = sorted(df["strike"].unique(), reverse=True)
+    atm_updated = atm_data.get("updated", "—")
 
+    col_oi, col_atm = st.columns([1, 3])
+    with col_oi:
+        min_oi = st.number_input("Min OI filter (New Date)", value=0, min_value=0,
+                                  step=10, key=f"{key_prefix}_min_oi")
+    with col_atm:
+        st.caption(
+            f"ATM ({title}): **{atm_label}** as of {atm_updated} | "
+            f"Data: {df['date'].min().date()} to {df['date'].max().date()}"
+        )
 
-# ── Title + compact summary ────────────────────────────────────────────────────
-atm_lbl = (f"{int(atm_kc) if atm_kc == int(atm_kc) else atm_kc}"
-           if atm_kc is not None else "—")
+    call_oi  = get_oi_pivot(df, month_keys, "Call", old_date, new_date, min_oi)
+    put_oi   = get_oi_pivot(df, month_keys, "Put",  old_date, new_date, min_oi)
+    call_vol = get_vol_pivot(df, month_keys, "Call", old_date, new_date, min_oi)
+    put_vol  = get_vol_pivot(df, month_keys, "Put",  old_date, new_date, min_oi)
 
-st.title("KC Options Dashboard")
-st.caption(
-    f"Old Date: **{old_date.strftime('%d %b %Y')}** | "
-    f"New Date: **{new_date.strftime('%d %b %Y')}** | "
-    f"ATM (KCc2): **{atm_lbl}** as of {atm_date or '—'}"
-)
+    c_oi  = _tot(call_oi);  p_oi  = _tot(put_oi)
+    c_vol = _tot(call_vol); p_vol = _tot(put_vol)
+    cp_oi  = f"{abs(c_oi/p_oi):.2f}"  if p_oi  != 0 else "—"
+    cp_vol = f"{c_vol/p_vol:.2f}"     if p_vol > 0  else "—"
 
-items = [
-    ("Call OI Delta",   _fn(c_oi)),
-    ("Put OI Delta",    _fn(p_oi)),
-    ("Call Volume",     _fn(c_vol)),
-    ("Put Volume",      _fn(p_vol)),
-    ("C/P OI Ratio",    cp_oi),
-    ("C/P Vol Ratio",   cp_vol),
-]
-st.markdown(
-    '<div style="display:flex;gap:28px;padding:8px 0 14px;border-bottom:1px solid #eee;flex-wrap:wrap">'
-    + "".join(
-        f'<div><div style="font-size:9px;color:#888;letter-spacing:.07em;text-transform:uppercase;margin-bottom:2px">{lbl}</div>'
-        f'<div style="font-size:14px;font-weight:600;color:#1a1a2e">{val}</div></div>'
-        for lbl, val in items
+    items = [
+        ("Call OI Delta", _fn(c_oi)),
+        ("Put OI Delta",  _fn(p_oi)),
+        ("Call Volume",   _fn(c_vol)),
+        ("Put Volume",    _fn(p_vol)),
+        ("C/P OI Ratio",  cp_oi),
+        ("C/P Vol Ratio", cp_vol),
+    ]
+    st.markdown(
+        '<div style="display:flex;gap:28px;padding:6px 0 12px;border-bottom:1px solid #eee;flex-wrap:wrap">'
+        + "".join(
+            f'<div><div style="font-size:9px;color:#888;letter-spacing:.07em;'
+            f'text-transform:uppercase;margin-bottom:2px">{lbl}</div>'
+            f'<div style="font-size:14px;font-weight:600;color:#1a1a2e">{val}</div></div>'
+            for lbl, val in items
+        )
+        + '</div>',
+        unsafe_allow_html=True
     )
-    + '</div>',
-    unsafe_allow_html=True
+
+    inner1, inner2 = st.tabs([f"OI Change + Volume", f"Px Change"])
+
+    with inner1:
+        cl, cr = st.columns(2)
+        with cl:
+            st.markdown("**OI Change**")
+            st.markdown(
+                butterfly_html(call_oi, put_oi, atm_val, oi_color, month_keys,
+                               fmt="{:.0f}", footer=True, title=title),
+                unsafe_allow_html=True)
+        with cr:
+            st.markdown("**Volume**")
+            st.markdown(
+                butterfly_html(call_vol, put_vol, atm_val, vol_color, month_keys,
+                               fmt="{:.0f}", footer=True, title=title),
+                unsafe_allow_html=True)
+
+        with st.expander("Drill Down — Single Option Time Series"):
+            dc1, dc2, dc3 = st.columns(3)
+            sel_s    = dc1.selectbox("Strike", all_strikes, key=f"{key_prefix}_dd_s")
+            sel_mk   = dc2.selectbox("Expiry", month_keys, key=f"{key_prefix}_dd_mk",
+                                      format_func=lambda mk: f"{MONTH_NAMES[mk[0]]} {mk[1]}")
+            sel_type = dc3.selectbox("Type", ["Call", "Put"], key=f"{key_prefix}_dd_t")
+
+            ric = ric_fn(sel_s, sel_mk[0], sel_mk[1], sel_type)
+            rdf = df[df["ric"] == ric].sort_values("date")
+
+            if rdf.empty:
+                st.info(f"No data for **{ric}**")
+            else:
+                st.caption(f"RIC: **{ric}** — {len(rdf)} trading days")
+                cc1, cc2, cc3 = st.columns(3)
+                for col, field, label in [
+                    (cc1, "oi", "Open Interest"),
+                    (cc2, "volume", "Volume"),
+                    (cc3, "settle", "Settle Price"),
+                ]:
+                    s = pd.to_numeric(rdf.set_index("date")[field], errors="coerce").dropna()
+                    if not s.empty:
+                        col.markdown(f"**{label}**")
+                        col.line_chart(s)
+
+        with st.expander("OI & Volume Time Series — All Strikes"):
+            all_d = sorted(df["date"].dt.date.unique())
+            if len(all_d) >= 2:
+                dr = st.slider("Date Range", min_value=all_d[0], max_value=all_d[-1],
+                               value=(all_d[0], all_d[-1]), key=f"{key_prefix}_ts_dr")
+                sub = df[(df["date"].dt.date >= dr[0]) & (df["date"].dt.date <= dr[1])].copy()
+                daily = (sub.groupby(["date", "option_type"])
+                         .agg(oi=("oi", "sum"), volume=("volume", "sum"))
+                         .reset_index())
+                tc1, tc2 = st.columns(2)
+                with tc1:
+                    st.markdown("**Call / Put OI**")
+                    oi_w = daily.pivot(index="date", columns="option_type", values="oi")
+                    oi_w.columns.name = None
+                    st.line_chart(oi_w.rename(columns={"Call": "Call OI", "Put": "Put OI"}))
+                with tc2:
+                    st.markdown("**Call / Put Volume**")
+                    vol_w = daily.pivot(index="date", columns="option_type", values="volume")
+                    vol_w.columns.name = None
+                    st.line_chart(vol_w.rename(columns={"Call": "Call Vol", "Put": "Put Vol"}))
+
+    with inner2:
+        call_px  = get_px_pivot(df, month_keys, "Call", old_date, new_date, min_oi)
+        put_px   = get_px_pivot(df, month_keys, "Put",  old_date, new_date, min_oi)
+        call_pct = get_pct_pivot(df, month_keys, "Call", old_date, new_date, min_oi)
+        put_pct  = get_pct_pivot(df, month_keys, "Put",  old_date, new_date, min_oi)
+
+        pc1, pc2 = st.columns(2)
+        with pc1:
+            st.markdown("**Px Change**")
+            st.markdown(
+                butterfly_html(call_px, put_px, atm_val, px_color, month_keys,
+                               fmt="{:.2f}", footer=False, title=title),
+                unsafe_allow_html=True)
+        with pc2:
+            st.markdown("**% Change**")
+            st.markdown(
+                butterfly_html(call_pct, put_pct, atm_val, px_color, month_keys,
+                               fmt="{:.1f}", footer=False, sfx="%", title=title),
+                unsafe_allow_html=True)
+
+
+# ── Main layout ────────────────────────────────────────────────────────────────
+st.title("Options Dashboard")
+st.caption(
+    f"Old Date: **{old_date.strftime('%d %b %Y')}**  |  "
+    f"New Date: **{new_date.strftime('%d %b %Y')}**"
 )
 
-tab1, tab2 = st.tabs(["OI Change + Volume", "Px Change"])
+tab_kc, tab_cc = st.tabs(["KC — Coffee C", "CC — Cocoa"])
 
-# ── Tab 1: OI | Volume side by side ───────────────────────────────────────────
-with tab1:
-    cl, cr = st.columns(2)
-    with cl:
-        st.markdown("**OI Change**")
-        st.markdown(butterfly_html(call_oi, put_oi, atm_kc, oi_color, fmt="{:.0f}", footer=True), unsafe_allow_html=True)
-    with cr:
-        st.markdown("**Volume**")
-        st.markdown(butterfly_html(call_vol, put_vol, atm_kc, vol_color, fmt="{:.0f}", footer=True), unsafe_allow_html=True)
+atm_kc = atm_data.get("KC")
+atm_cc = atm_data.get("CC")
 
-    with st.expander("Drill Down — Single Option Time Series"):
-        dc1, dc2, dc3 = st.columns(3)
-        sel_s    = dc1.selectbox("Strike", all_strikes, key="dd_s")
-        sel_mk   = dc2.selectbox("Expiry", month_keys, key="dd_mk",
-                                  format_func=lambda mk: f"{MONTH_NAMES[mk[0]]} {mk[1]}")
-        sel_type = dc3.selectbox("Type", ["Call", "Put"], key="dd_t")
+with tab_kc:
+    atm_kc_lbl = (f"{int(atm_kc) if atm_kc == int(atm_kc) else atm_kc}"
+                  if atm_kc is not None else "—")
+    render_commodity_tab(
+        df=df_kc,
+        atm_val=atm_kc,
+        atm_label=atm_kc_lbl,
+        old_date=old_date,
+        new_date=new_date,
+        key_prefix="kc",
+        title="KC",
+        ric_fn=_ric_kc,
+    )
 
-        ric = _ric(sel_s, sel_mk[0], sel_mk[1], sel_type)
-        rdf = df[df["ric"] == ric].sort_values("date")
-
-        if rdf.empty:
-            st.info(f"No data for **{ric}**")
-        else:
-            st.caption(f"RIC: **{ric}** — {len(rdf)} trading days")
-            cc1, cc2, cc3 = st.columns(3)
-            for col, field, label in [(cc1,"oi","Open Interest"),(cc2,"volume","Volume"),(cc3,"settle","Settle Price")]:
-                s = pd.to_numeric(rdf.set_index("date")[field], errors="coerce").dropna()
-                if not s.empty:
-                    col.markdown(f"**{label}**")
-                    col.line_chart(s)
-
-    with st.expander("OI & Volume Time Series — All Strikes"):
-        all_d = sorted(df["date"].dt.date.unique())
-        if len(all_d) >= 2:
-            dr = st.slider("Date Range", min_value=all_d[0], max_value=all_d[-1],
-                           value=(all_d[0], all_d[-1]), key="ts_dr")
-            sub = df[(df["date"].dt.date >= dr[0]) & (df["date"].dt.date <= dr[1])].copy()
-            daily = (sub.groupby(["date", "option_type"])
-                     .agg(oi=("oi", "sum"), volume=("volume", "sum"))
-                     .reset_index())
-
-            tc1, tc2 = st.columns(2)
-            with tc1:
-                st.markdown("**Call / Put OI**")
-                oi_w = daily.pivot(index="date", columns="option_type", values="oi")
-                oi_w.columns.name = None
-                st.line_chart(oi_w.rename(columns={"Call": "Call OI", "Put": "Put OI"}))
-            with tc2:
-                st.markdown("**Call / Put Volume**")
-                vol_w = daily.pivot(index="date", columns="option_type", values="volume")
-                vol_w.columns.name = None
-                st.line_chart(vol_w.rename(columns={"Call": "Call Vol", "Put": "Put Vol"}))
-
-# ── Tab 2: Px Change | % Change ───────────────────────────────────────────────
-with tab2:
-    call_px  = get_px_pivot("Call")
-    put_px   = get_px_pivot("Put")
-    call_pct = get_pct_pivot("Call")
-    put_pct  = get_pct_pivot("Put")
-
-    pc1, pc2 = st.columns(2)
-    with pc1:
-        st.markdown("**Px Change**")
-        st.markdown(butterfly_html(call_px, put_px, atm_kc, px_color,
-                               fmt="{:.2f}", footer=False), unsafe_allow_html=True)
-    with pc2:
-        st.markdown("**% Change**")
-        st.markdown(butterfly_html(call_pct, put_pct, atm_kc, px_color,
-                               fmt="{:.1f}", footer=False, sfx="%"), unsafe_allow_html=True)
+with tab_cc:
+    atm_cc_lbl = f"{int(atm_cc):,}" if atm_cc is not None else "—"
+    render_commodity_tab(
+        df=df_cc,
+        atm_val=atm_cc,
+        atm_label=atm_cc_lbl,
+        old_date=old_date,
+        new_date=new_date,
+        key_prefix="cc",
+        title="CC",
+        ric_fn=_ric_cc,
+    )

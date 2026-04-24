@@ -80,7 +80,7 @@ def get_atm_strike() -> float:
             existing = json.loads(ATM_PATH.read_text())
         except Exception:
             pass
-    existing["CC"]      = round(last_settle_mt)   # store in $/mt for display
+    existing["CC"]      = round(atm * MT_TO_CWT)  # store rounded ATM in $/mt (matches parquet strikes)
     existing["updated"] = TODAY
     ATM_PATH.write_text(json.dumps(existing))
     return atm

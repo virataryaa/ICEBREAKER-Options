@@ -1,6 +1,6 @@
 """
 run.py -- ICEBREAKER Options daily automator
-Runs Ingest.py, commits updated parquet + atm.json, pushes to GitHub, sends email.
+Runs KC + CC ingest, commits updated parquets + atm.json, pushes to GitHub, sends email.
 """
 
 import subprocess
@@ -13,14 +13,16 @@ import win32com.client
 
 # -- Paths --------------------------------------------------------------------
 
-ROOT      = Path(__file__).resolve().parent.parent
-INGEST    = ROOT / "Code" / "Ingest.py"
-PARQUET   = ROOT / "Database" / "KC_options_ice.parquet"
-ATM_JSON  = ROOT / "Dashboard" / "atm.json"
-LOG_FILE  = Path(__file__).resolve().parent / "run_log.txt"
-PYTHON    = sys.executable
+ROOT         = Path(__file__).resolve().parent.parent
+INGEST_KC    = ROOT / "Code" / "Ingest.py"
+INGEST_CC    = ROOT / "Code" / "CC_Ingest.py"
+PARQUET_KC   = ROOT / "Database" / "KC_options_ice.parquet"
+PARQUET_CC   = ROOT / "Database" / "CC_options_ice.parquet"
+ATM_JSON     = ROOT / "Dashboard" / "atm.json"
+LOG_FILE     = Path(__file__).resolve().parent / "run_log.txt"
+PYTHON       = sys.executable
 
-EMAIL_TO  = "virat.arya@etgworld.com"
+EMAIL_TO = "virat.arya@etgworld.com"
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -45,20 +47,22 @@ def send_email(subject: str, body: str):
         log(f"Email failed: {e}")
 
 
-def run_ingest() -> tuple[bool, str]:
+def run_ingest(script: Path, label: str) -> tuple[bool, str]:
+    log(f"Running {label} ingest...")
     result = subprocess.run(
-        [PYTHON, str(INGEST)],
+        [PYTHON, str(script)],
         capture_output=True, text=True
     )
     output = result.stdout + result.stderr
     return result.returncode == 0, output
 
 
-def git_push() -> tuple[bool, str]:
+def git_push(files: list[Path]) -> tuple[bool, str]:
+    rel = [str(f.relative_to(ROOT)) for f in files if f.exists()]
+    if not rel:
+        return False, "No files to stage"
     cmds = [
-        ["git", "add",
-         str(PARQUET.relative_to(ROOT)),
-         str(ATM_JSON.relative_to(ROOT))],
+        ["git", "add"] + rel,
         ["git", "commit", "-m",
          f"auto: daily options update {datetime.date.today()}"],
         ["git", "push"],
@@ -75,41 +79,52 @@ def git_push() -> tuple[bool, str]:
 # -- Main ---------------------------------------------------------------------
 
 def main():
-    today   = datetime.date.today().isoformat()
+    today = datetime.date.today().isoformat()
     log("=" * 50)
-    log(f"KC Options ingest started — {today}")
+    log(f"Options ingest started — {today}")
 
-    # 1. Run ingest
-    ok, ingest_out = run_ingest()
-    log("Ingest: OK" if ok else "Ingest: FAILED")
-    for line in ingest_out.strip().splitlines():
-        log("  " + line)
+    ingests = [
+        (INGEST_KC, "KC"),
+        (INGEST_CC, "CC"),
+    ]
 
-    if not ok:
+    all_output = {}
+    any_failed = False
+
+    for script, label in ingests:
+        ok, out = run_ingest(script, label)
+        all_output[label] = (ok, out)
+        log(f"{label} ingest: {'OK' if ok else 'FAILED'}")
+        for line in out.strip().splitlines():
+            log(f"  {line}")
+        if not ok:
+            any_failed = True
+
+    if any_failed:
+        failed_labels = [lbl for lbl, (ok, _) in all_output.items() if not ok]
+        combined = "\n\n".join(
+            f"=== {lbl} ===\n{out}" for lbl, (ok, out) in all_output.items()
+        )
         send_email(
-            f"[ICEBREAKER Options] FAILED {today}",
-            f"Ingest failed.\n\n{ingest_out}"
+            f"[ICEBREAKER Options] FAILED {today} ({', '.join(failed_labels)})",
+            combined
         )
         sys.exit(1)
 
-    # 2. Extract summary line for email
-    summary = next(
-        (l for l in ingest_out.splitlines() if l.startswith("Saved")),
-        ingest_out.splitlines()[-1] if ingest_out.strip() else "No output"
-    )
-
-    # 3. Git commit + push
-    pushed, git_out = git_push()
+    # Git commit + push
+    pushed, git_out = git_push([PARQUET_KC, PARQUET_CC, ATM_JSON])
     log("Git push: OK" if pushed else "Git push: FAILED (may be nothing new)")
     for line in git_out.strip().splitlines():
-        log("  " + line)
+        log(f"  {line}")
 
-    # 4. Email
+    # Email summary
+    body_parts = []
+    for label, (ok, out) in all_output.items():
+        body_parts.append(f"=== {label} ===\n{out.strip()}")
     body = (
-        f"KC Options ingest completed — {today}\n\n"
-        f"{ingest_out.strip()}\n\n"
-        f"Git: {'pushed' if pushed else 'nothing new / failed'}\n"
-        f"{git_out.strip()}"
+        f"Options ingest completed — {today}\n\n"
+        + "\n\n".join(body_parts)
+        + f"\n\nGit: {'pushed' if pushed else 'nothing new / failed'}\n{git_out.strip()}"
     )
     send_email(f"[ICEBREAKER Options] OK {today}", body)
     log("Done.")
