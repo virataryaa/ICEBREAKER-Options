@@ -45,6 +45,12 @@ def load_sb():
     df["date"] = pd.to_datetime(df["date"])
     return df
 
+@st.cache_data(ttl=1800)
+def load_ct():
+    df = pd.read_parquet(DB_PATH / "CT_options_ice.parquet")
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
 def load_atm():
     try:
         with open(ATM_JSON) as f:
@@ -63,10 +69,11 @@ def _try_load(fn, name):
 df_kc    = _try_load(load_kc, "KC")
 df_cc    = _try_load(load_cc, "CC")
 df_sb    = _try_load(load_sb, "SB")
+df_ct    = _try_load(load_ct, "CT")
 atm_data = load_atm()
 
 all_dates = set()
-for _df in [df_kc, df_cc, df_sb]:
+for _df in [df_kc, df_cc, df_sb, df_ct]:
     if not _df.empty:
         all_dates.update(_df["date"].dt.date.unique())
 available_dates = sorted(all_dates)
@@ -319,6 +326,13 @@ def _ric_sb(strike, month, year, opt):
     cp  = "C" if opt == "Call" else "P"
     return f"SB {mc}{yy}{cp}{int(round(strike * 100))}"
 
+def _ric_ct(strike, month, year, opt):
+    """Strike stored as cts/lb integer directly."""
+    mc  = MONTH_TO_CODE[month]
+    yy  = f"{year % 100:02d}"
+    cp  = "C" if opt == "Call" else "P"
+    return f"CT {mc}{yy}{cp}{int(round(strike))}"
+
 
 # ── Commodity tab renderer ─────────────────────────────────────────────────────
 def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
@@ -466,11 +480,12 @@ st.caption(
     f"New Date: **{new_date.strftime('%d %b %Y')}**"
 )
 
-tab_kc, tab_cc, tab_sb = st.tabs(["KC — Coffee C", "CC — Cocoa", "SB — Sugar #11"])
+tab_kc, tab_cc, tab_sb, tab_ct = st.tabs(["KC — Coffee C", "CC — Cocoa", "SB — Sugar #11", "CT — Cotton"])
 
 atm_kc = atm_data.get("KC")
 atm_cc = atm_data.get("CC")
 atm_sb = atm_data.get("SB")
+atm_ct = atm_data.get("CT")
 
 with tab_kc:
     atm_kc_lbl = (f"{int(atm_kc) if atm_kc == int(atm_kc) else atm_kc}"
@@ -510,4 +525,17 @@ with tab_sb:
         key_prefix="sb",
         title="SB",
         ric_fn=_ric_sb,
+    )
+
+with tab_ct:
+    atm_ct_lbl = f"{int(atm_ct)}" if atm_ct is not None else "—"
+    render_commodity_tab(
+        df=df_ct,
+        atm_val=atm_ct,
+        atm_label=atm_ct_lbl,
+        old_date=old_date,
+        new_date=new_date,
+        key_prefix="ct",
+        title="CT",
+        ric_fn=_ric_ct,
     )
