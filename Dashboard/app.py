@@ -213,12 +213,12 @@ def butterfly_html(cpiv, ppiv, atm, cfn, month_keys, fmt="{:.0f}",
     pcols = list(month_keys)
 
     if fixed_strikes is not None:
-        strikes = list(fixed_strikes)  # already sorted desc by caller
+        strikes = list(fixed_strikes)  # already sorted asc by caller
     else:
         strikes_set = set()
         if not cpiv.empty: strikes_set.update(cpiv.index.tolist())
         if not ppiv.empty: strikes_set.update(ppiv.index.tolist())
-        strikes = sorted(strikes_set, reverse=True)
+        strikes = sorted(strikes_set)  # low to high
 
     if atm_tol is None:
         if len(strikes) >= 2:
@@ -328,7 +328,7 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
         return
 
     month_keys  = _month_keys(df)
-    all_strikes = sorted(df["strike"].unique(), reverse=True)
+    all_strikes = sorted(df["strike"].unique())  # low to high, top to bottom
     atm_updated = atm_data.get("updated", "—")
 
     col_oi, col_atm = st.columns([1, 3])
