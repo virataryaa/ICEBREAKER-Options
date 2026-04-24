@@ -18,10 +18,12 @@ INGEST_KC    = ROOT / "Code" / "Ingest.py"
 INGEST_CC    = ROOT / "Code" / "CC_Ingest.py"
 INGEST_SB    = ROOT / "Code" / "SB_Ingest.py"
 INGEST_CT    = ROOT / "Code" / "CT_Ingest.py"
+INGEST_LCC   = ROOT / "Code" / "LCC_Ingest.py"
 PARQUET_KC   = ROOT / "Database" / "KC_options_ice.parquet"
 PARQUET_CC   = ROOT / "Database" / "CC_options_ice.parquet"
 PARQUET_SB   = ROOT / "Database" / "SB_options_ice.parquet"
 PARQUET_CT   = ROOT / "Database" / "CT_options_ice.parquet"
+PARQUET_LCC  = ROOT / "Database" / "LCC_options_ice.parquet"
 ATM_JSON     = ROOT / "Dashboard" / "atm.json"
 LOG_FILE     = Path(__file__).resolve().parent / "run_log.txt"
 PYTHON       = sys.executable
@@ -88,10 +90,11 @@ def main():
     log(f"Options ingest started — {today}")
 
     ingests = [
-        (INGEST_KC, "KC"),
-        (INGEST_CC, "CC"),
-        (INGEST_SB, "SB"),
-        (INGEST_CT, "CT"),
+        (INGEST_KC,  "KC"),
+        (INGEST_CC,  "CC"),
+        (INGEST_SB,  "SB"),
+        (INGEST_CT,  "CT"),
+        (INGEST_LCC, "LCC"),
     ]
 
     all_output = {}
@@ -118,7 +121,7 @@ def main():
         sys.exit(1)
 
     # Git commit + push
-    pushed, git_out = git_push([PARQUET_KC, PARQUET_CC, PARQUET_SB, PARQUET_CT, ATM_JSON])
+    pushed, git_out = git_push([PARQUET_KC, PARQUET_CC, PARQUET_SB, PARQUET_CT, PARQUET_LCC, ATM_JSON])
     log("Git push: OK" if pushed else "Git push: FAILED (may be nothing new)")
     for line in git_out.strip().splitlines():
         log(f"  {line}")
