@@ -486,17 +486,22 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
             st.caption(f"OI as of **{new_date.strftime('%d %b %Y')}** — click a row to view its time series")
             ddc1, ddc2 = st.columns(2)
 
+            def _fmt_strike(x):
+                return f"{x:.1f}" if x % 1 != 0 else f"{int(x)}"
+
             with ddc1:
                 st.markdown("**Calls**")
                 call_evt = st.dataframe(
-                    call_show.style.apply(_style_oi, rgb="66,133,244", subset=["OI"]),
+                    call_show.style.apply(_style_oi, rgb="66,133,244", subset=["OI"])
+                             .format({"Strike": _fmt_strike, "OI": "{:,}"}),
                     on_select="rerun", selection_mode="single-row",
                     key=f"{key_prefix}_dd_call", use_container_width=True, hide_index=True,
                 )
             with ddc2:
                 st.markdown("**Puts**")
                 put_evt = st.dataframe(
-                    put_show.style.apply(_style_oi, rgb="220,75,75", subset=["OI"]),
+                    put_show.style.apply(_style_oi, rgb="220,75,75", subset=["OI"])
+                            .format({"Strike": _fmt_strike, "OI": "{:,}"}),
                     on_select="rerun", selection_mode="single-row",
                     key=f"{key_prefix}_dd_put", use_container_width=True, hide_index=True,
                 )
@@ -515,7 +520,10 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
             if sel_type and sel_strike is not None and sel_mk:
                 ric = ric_fn(sel_strike, sel_mk[0], sel_mk[1], sel_type)
                 rdf = df[df["ric"] == ric].sort_values("date")
-                st.caption(f"**{ric}** — {len(rdf)} trading days")
+                strike_lbl = _fmt_strike(sel_strike)
+                exp_lbl    = f"{MONTH_NAMES[sel_mk[0]]} '{str(sel_mk[1])[-2:]}"
+                friendly   = f"{title} {exp_lbl} {strike_lbl} {sel_type} ({ric})"
+                st.caption(f"**{friendly}** — {len(rdf)} trading days")
                 if rdf.empty:
                     st.info(f"No data for {ric}")
                 else:
@@ -527,7 +535,10 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                         s = pd.to_numeric(rdf.set_index("date")[field], errors="coerce").dropna()
                         if not s.empty:
                             col.markdown(f"**{label}**")
-                            col.line_chart(s)
+                            if field == "volume":
+                                col.bar_chart(s)
+                            else:
+                                col.line_chart(s)
             else:
                 st.caption("Click any row above to view its time series.")
 
