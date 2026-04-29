@@ -428,14 +428,14 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                 st.markdown(f"**Old Date — {old_date.strftime('%d %b %Y')}**")
                 st.markdown(
                     butterfly_html(call_oi_old, put_oi_old, atm_val, vol_color, month_keys,
-                                   fmt="{:.0f}", footer=True, title=title,
+                                   fmt="{:.0f}", footer=False, title=title,
                                    fixed_strikes=all_strikes),
                     unsafe_allow_html=True)
             with sc2:
                 st.markdown(f"**New Date — {new_date.strftime('%d %b %Y')}**")
                 st.markdown(
                     butterfly_html(call_oi_new, put_oi_new, atm_val, vol_color, month_keys,
-                                   fmt="{:.0f}", footer=True, title=title,
+                                   fmt="{:.0f}", footer=False, title=title,
                                    fixed_strikes=all_strikes),
                     unsafe_allow_html=True)
 
