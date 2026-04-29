@@ -440,29 +440,79 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                     unsafe_allow_html=True)
 
         with st.expander("Drill Down — Single Option Time Series"):
-            dc1, dc2, dc3 = st.columns(3)
-            sel_s    = dc1.selectbox("Strike", all_strikes, key=f"{key_prefix}_dd_s")
-            sel_mk   = dc2.selectbox("Expiry", month_keys, key=f"{key_prefix}_dd_mk",
-                                      format_func=lambda mk: f"{MONTH_NAMES[mk[0]]} {mk[1]}")
-            sel_type = dc3.selectbox("Type", ["Call", "Put"], key=f"{key_prefix}_dd_t")
+            call_dd_piv = get_oi_snapshot_pivot(df, month_keys, "Call", new_date, new_date, min_oi)
+            put_dd_piv  = get_oi_snapshot_pivot(df, month_keys, "Put",  new_date, new_date, min_oi)
 
-            ric = ric_fn(sel_s, sel_mk[0], sel_mk[1], sel_type)
-            rdf = df[df["ric"] == ric].sort_values("date")
+            col_labels = {mk: f"{MONTH_NAMES[mk[0]]} '{str(mk[1])[-2:]}" for mk in month_keys}
+            mk_lookup  = {v: k for k, v in col_labels.items()}
 
-            if rdf.empty:
-                st.info(f"No data for **{ric}**")
+            def _dd_display(piv):
+                d = piv.rename(columns=col_labels)
+                return d.where(d > 0)  # hide zeros as NaN
+
+            call_disp = _dd_display(call_dd_piv)
+            put_disp  = _dd_display(put_dd_piv)
+
+            st.caption(f"OI as of **{new_date.strftime('%d %b %Y')}** — click any cell to view its time series")
+            ddc1, ddc2 = st.columns(2)
+
+            with ddc1:
+                st.markdown("**Calls**")
+                call_evt = st.dataframe(
+                    call_disp.style.background_gradient(cmap="Blues", axis=None).format("{:.0f}", na_rep=""),
+                    on_select="rerun",
+                    selection_mode=["single-row", "single-column"],
+                    key=f"{key_prefix}_dd_call",
+                    use_container_width=True,
+                )
+
+            with ddc2:
+                st.markdown("**Puts**")
+                put_evt = st.dataframe(
+                    put_disp.style.background_gradient(cmap="RdPu", axis=None).format("{:.0f}", na_rep=""),
+                    on_select="rerun",
+                    selection_mode=["single-row", "single-column"],
+                    key=f"{key_prefix}_dd_put",
+                    use_container_width=True,
+                )
+
+            sel_type = sel_strike = sel_mk = None
+
+            c_rows = call_evt.selection.get("rows", [])
+            c_cols = call_evt.selection.get("columns", [])
+            p_rows = put_evt.selection.get("rows", [])
+            p_cols = put_evt.selection.get("columns", [])
+
+            if c_rows and c_cols:
+                sel_type   = "Call"
+                sel_strike = call_disp.index[c_rows[0]]
+                col_name   = c_cols[0] if isinstance(c_cols[0], str) else call_disp.columns[c_cols[0]]
+                sel_mk     = mk_lookup.get(col_name)
+            elif p_rows and p_cols:
+                sel_type   = "Put"
+                sel_strike = put_disp.index[p_rows[0]]
+                col_name   = p_cols[0] if isinstance(p_cols[0], str) else put_disp.columns[p_cols[0]]
+                sel_mk     = mk_lookup.get(col_name)
+
+            if sel_type and sel_strike is not None and sel_mk:
+                ric = ric_fn(sel_strike, sel_mk[0], sel_mk[1], sel_type)
+                rdf = df[df["ric"] == ric].sort_values("date")
+                st.caption(f"**{ric}** — {len(rdf)} trading days")
+                if rdf.empty:
+                    st.info(f"No data for {ric}")
+                else:
+                    cc1, cc2, cc3 = st.columns(3)
+                    for col, field, label in [
+                        (cc1, "oi",     "Open Interest"),
+                        (cc2, "volume", "Volume"),
+                        (cc3, "settle", "Settle Price"),
+                    ]:
+                        s = pd.to_numeric(rdf.set_index("date")[field], errors="coerce").dropna()
+                        if not s.empty:
+                            col.markdown(f"**{label}**")
+                            col.line_chart(s)
             else:
-                st.caption(f"RIC: **{ric}** — {len(rdf)} trading days")
-                cc1, cc2, cc3 = st.columns(3)
-                for col, field, label in [
-                    (cc1, "oi", "Open Interest"),
-                    (cc2, "volume", "Volume"),
-                    (cc3, "settle", "Settle Price"),
-                ]:
-                    s = pd.to_numeric(rdf.set_index("date")[field], errors="coerce").dropna()
-                    if not s.empty:
-                        col.markdown(f"**{label}**")
-                        col.line_chart(s)
+                st.caption("No option selected — click a cell above.")
 
         with st.expander("OI & Volume Time Series — All Strikes"):
             all_d = sorted(df["date"].dt.date.unique())
