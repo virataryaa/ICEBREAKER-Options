@@ -446,99 +446,97 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
             col_labels = {mk: f"{MONTH_NAMES[mk[0]]} '{str(mk[1])[-2:]}" for mk in month_keys}
             mk_lookup  = {v: k for k, v in col_labels.items()}
 
-            def _dd_display(piv):
-                d = piv.rename(columns=col_labels)
-                d.index.name = None
-                return d.where(d > 0)
-
-            def _style(data, rgb):
-                vals = data.values.astype(float)
-                flat = vals[~np.isnan(vals)]
-                mx = float(np.max(flat)) if len(flat) > 0 else 1.0
-                if mx == 0: mx = 1.0
-                out = pd.DataFrame("", index=data.index, columns=data.columns)
-                for i in data.index:
-                    for c in data.columns:
+            def _flat_list(piv, opt_type):
+                rows = []
+                for strike in sorted(piv.index):  # ascending
+                    for mk in sorted(month_keys):
+                        if mk not in piv.columns:
+                            continue
+                        v = piv.at[strike, mk]
                         try:
-                            v = float(data.at[i, c])
+                            v = float(v)
                         except (TypeError, ValueError):
                             continue
                         if np.isnan(v) or v <= 0:
                             continue
-                        a = round(0.15 + min(v / mx, 1.0) * 0.5, 2)
-                        out.at[i, c] = f"background-color:rgba({rgb},{a});color:#1a1a2e"
-                return out
+                        rows.append({
+                            "Strike": strike,
+                            "Expiry": col_labels[mk],
+                            "OI":     int(v),
+                        })
+                return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Strike", "Expiry", "OI"])
 
-            call_disp = _dd_display(call_dd_piv)
-            put_disp  = _dd_display(put_dd_piv)
+            def _style_oi(s, rgb):
+                mx = s.max() if len(s) > 0 else 1.0
+                if pd.isna(mx) or mx == 0: mx = 1.0
+                return [
+                    f"background-color:rgba({rgb},{round(0.15+min(v/mx,1.0)*0.5,2)});color:#1a1a2e"
+                    if pd.notna(v) and v > 0 else ""
+                    for v in s
+                ]
 
-            st.caption(f"OI as of **{new_date.strftime('%d %b %Y')}** — click any cell to view its time series")
+            call_flat = _flat_list(call_dd_piv, "Call")
+            put_flat  = _flat_list(put_dd_piv,  "Put")
+
+            st.caption(f"OI as of **{new_date.strftime('%d %b %Y')}** — click a row to view its time series")
             ddc1, ddc2 = st.columns(2)
 
             with ddc1:
                 st.markdown("**Calls**")
                 call_evt = st.dataframe(
-                    call_disp.style.apply(_style, rgb="66,133,244", axis=None).format("{:.0f}", na_rep=""),
+                    call_flat.style.apply(_style_oi, rgb="66,133,244", subset=["OI"]),
                     on_select="rerun",
                     selection_mode="single-row",
                     key=f"{key_prefix}_dd_call",
                     use_container_width=True,
+                    hide_index=True,
                 )
 
             with ddc2:
                 st.markdown("**Puts**")
                 put_evt = st.dataframe(
-                    put_disp.style.apply(_style, rgb="220,75,75", axis=None).format("{:.0f}", na_rep=""),
+                    put_flat.style.apply(_style_oi, rgb="220,75,75", subset=["OI"]),
                     on_select="rerun",
                     selection_mode="single-row",
                     key=f"{key_prefix}_dd_put",
                     use_container_width=True,
+                    hide_index=True,
                 )
 
-            sel_type = sel_strike = None
+            sel_type = sel_strike = sel_mk = None
             c_rows = call_evt.selection.get("rows", [])
             p_rows = put_evt.selection.get("rows", [])
 
-            if c_rows:
-                sel_type   = "Call"
-                sel_strike = call_disp.index[c_rows[0]]
-                src_disp   = call_disp
-            elif p_rows:
-                sel_type   = "Put"
-                sel_strike = put_disp.index[p_rows[0]]
-                src_disp   = put_disp
+            if c_rows and not call_flat.empty:
+                row      = call_flat.iloc[c_rows[0]]
+                sel_type = "Call"
+                sel_strike = row["Strike"]
+                sel_mk   = mk_lookup.get(row["Expiry"])
+            elif p_rows and not put_flat.empty:
+                row      = put_flat.iloc[p_rows[0]]
+                sel_type = "Put"
+                sel_strike = row["Strike"]
+                sel_mk   = mk_lookup.get(row["Expiry"])
 
-            if sel_type and sel_strike is not None:
-                row_data      = src_disp.loc[sel_strike]
-                valid_expiries = [c for c in src_disp.columns
-                                  if pd.notna(row_data.get(c)) and row_data.get(c, 0) > 0]
-                if not valid_expiries:
-                    valid_expiries = list(src_disp.columns)
-                sel_col = st.selectbox(
-                    f"{sel_type} — Strike {sel_strike} — Expiry",
-                    valid_expiries,
-                    key=f"{key_prefix}_dd_exp",
-                )
-                sel_mk = mk_lookup.get(sel_col)
-                if sel_mk:
-                    ric = ric_fn(sel_strike, sel_mk[0], sel_mk[1], sel_type)
-                    rdf = df[df["ric"] == ric].sort_values("date")
-                    st.caption(f"**{ric}** — {len(rdf)} trading days")
-                    if rdf.empty:
-                        st.info(f"No data for {ric}")
-                    else:
-                        cc1, cc2, cc3 = st.columns(3)
-                        for col, field, label in [
-                            (cc1, "oi",     "Open Interest"),
-                            (cc2, "volume", "Volume"),
-                            (cc3, "settle", "Settle Price"),
-                        ]:
-                            s = pd.to_numeric(rdf.set_index("date")[field], errors="coerce").dropna()
-                            if not s.empty:
-                                col.markdown(f"**{label}**")
-                                col.line_chart(s)
+            if sel_type and sel_strike is not None and sel_mk:
+                ric = ric_fn(sel_strike, sel_mk[0], sel_mk[1], sel_type)
+                rdf = df[df["ric"] == ric].sort_values("date")
+                st.caption(f"**{ric}** — {len(rdf)} trading days")
+                if rdf.empty:
+                    st.info(f"No data for {ric}")
+                else:
+                    cc1, cc2, cc3 = st.columns(3)
+                    for col, field, label in [
+                        (cc1, "oi",     "Open Interest"),
+                        (cc2, "volume", "Volume"),
+                        (cc3, "settle", "Settle Price"),
+                    ]:
+                        s = pd.to_numeric(rdf.set_index("date")[field], errors="coerce").dropna()
+                        if not s.empty:
+                            col.markdown(f"**{label}**")
+                            col.line_chart(s)
             else:
-                st.caption("Click a row to select a strike, then pick the expiry.")
+                st.caption("Click any row above to view its time series.")
 
         with st.expander("OI & Volume Time Series — All Strikes"):
             all_d = sorted(df["date"].dt.date.unique())
