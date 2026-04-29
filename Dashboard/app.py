@@ -448,7 +448,26 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
 
             def _dd_display(piv):
                 d = piv.rename(columns=col_labels)
-                return d.where(d > 0)  # hide zeros as NaN
+                d.index.name = None
+                return d.where(d > 0)
+
+            def _style(data, rgb):
+                vals = data.values.astype(float)
+                flat = vals[~np.isnan(vals)]
+                mx = float(np.max(flat)) if len(flat) > 0 else 1.0
+                if mx == 0: mx = 1.0
+                out = pd.DataFrame("", index=data.index, columns=data.columns)
+                for i in data.index:
+                    for c in data.columns:
+                        try:
+                            v = float(data.at[i, c])
+                        except (TypeError, ValueError):
+                            continue
+                        if np.isnan(v) or v <= 0:
+                            continue
+                        a = round(0.15 + min(v / mx, 1.0) * 0.5, 2)
+                        out.at[i, c] = f"background-color:rgba({rgb},{a});color:#1a1a2e"
+                return out
 
             call_disp = _dd_display(call_dd_piv)
             put_disp  = _dd_display(put_dd_piv)
@@ -459,7 +478,7 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
             with ddc1:
                 st.markdown("**Calls**")
                 call_evt = st.dataframe(
-                    call_disp.style.background_gradient(cmap="Blues", axis=None).format("{:.0f}", na_rep=""),
+                    call_disp.style.apply(_style, rgb="66,133,244", axis=None).format("{:.0f}", na_rep=""),
                     on_select="rerun",
                     selection_mode=["single-row", "single-column"],
                     key=f"{key_prefix}_dd_call",
@@ -469,7 +488,7 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
             with ddc2:
                 st.markdown("**Puts**")
                 put_evt = st.dataframe(
-                    put_disp.style.background_gradient(cmap="RdPu", axis=None).format("{:.0f}", na_rep=""),
+                    put_disp.style.apply(_style, rgb="220,75,75", axis=None).format("{:.0f}", na_rep=""),
                     on_select="rerun",
                     selection_mode=["single-row", "single-column"],
                     key=f"{key_prefix}_dd_put",
