@@ -12,6 +12,7 @@ import json
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
 from pathlib import Path
 
 st.set_page_config(page_title="Options Dashboard", layout="wide")
@@ -443,80 +444,87 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
             call_dd_piv = get_oi_snapshot_pivot(df, month_keys, "Call", new_date, new_date, min_oi)
             put_dd_piv  = get_oi_snapshot_pivot(df, month_keys, "Put",  new_date, new_date, min_oi)
 
-            col_labels = {mk: f"{MONTH_NAMES[mk[0]]} '{str(mk[1])[-2:]}" for mk in month_keys}
-            mk_lookup  = {v: k for k, v in col_labels.items()}
+            col_labels  = {mk: f"{MONTH_NAMES[mk[0]]} '{str(mk[1])[-2:]}" for mk in month_keys}
+            mk_lookup   = {v: k for k, v in col_labels.items()}
+            x_labels    = [col_labels[mk] for mk in month_keys]
+            strikes_asc = sorted(set(list(call_dd_piv.index) + list(put_dd_piv.index)))
+            y_labels    = [str(int(s) if s == int(s) else s) for s in strikes_asc]
 
-            def _flat_list(piv, opt_type):
-                rows = []
-                for strike in sorted(piv.index):  # ascending
-                    for mk in sorted(month_keys):
-                        if mk not in piv.columns:
-                            continue
-                        v = piv.at[strike, mk]
-                        try:
-                            v = float(v)
-                        except (TypeError, ValueError):
-                            continue
-                        if np.isnan(v) or v <= 0:
-                            continue
-                        rows.append({
-                            "Strike": strike,
-                            "Expiry": col_labels[mk],
-                            "OI":     int(v),
-                        })
-                return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Strike", "Expiry", "OI"])
+            def _heat_z(piv):
+                z, txt = [], []
+                for s in strikes_asc:
+                    rz, rt = [], []
+                    for mk in month_keys:
+                        v = None
+                        if mk in piv.columns and s in piv.index:
+                            try:
+                                v = float(piv.at[s, mk])
+                                if np.isnan(v) or v <= 0:
+                                    v = None
+                            except (TypeError, ValueError):
+                                v = None
+                        rz.append(v)
+                        rt.append(f"{int(v):,}" if v is not None else "")
+                    z.append(rz)
+                    txt.append(rt)
+                return z, txt
 
-            def _style_oi(s, rgb):
-                mx = s.max() if len(s) > 0 else 1.0
-                if pd.isna(mx) or mx == 0: mx = 1.0
-                return [
-                    f"background-color:rgba({rgb},{round(0.15+min(v/mx,1.0)*0.5,2)});color:#1a1a2e"
-                    if pd.notna(v) and v > 0 else ""
-                    for v in s
-                ]
+            def _heat_fig(piv, colorscale, title):
+                z, txt = _heat_z(piv)
+                height = max(300, len(strikes_asc) * 22 + 80)
+                fig = go.Figure(go.Heatmap(
+                    x=x_labels, y=y_labels, z=z,
+                    text=txt, texttemplate="%{text}",
+                    textfont=dict(size=10, color="#1a1a2e"),
+                    colorscale=colorscale, showscale=False,
+                    hoverongaps=False,
+                    hovertemplate="Strike: %{y}<br>Expiry: %{x}<br>OI: %{z:,.0f}<extra></extra>",
+                    xgap=1, ygap=1,
+                ))
+                fig.update_layout(
+                    title=dict(text=title, x=0.5, font=dict(size=13)),
+                    margin=dict(l=5, r=5, t=45, b=5),
+                    height=height,
+                    xaxis=dict(side="top", tickfont=dict(size=10)),
+                    yaxis=dict(autorange="reversed", tickfont=dict(size=10)),
+                    plot_bgcolor="white", paper_bgcolor="white",
+                    clickmode="event+select",
+                )
+                return fig
 
-            call_flat = _flat_list(call_dd_piv, "Call")
-            put_flat  = _flat_list(put_dd_piv,  "Put")
+            blue = [[0, "rgba(219,234,254,1)"], [1, "rgba(37,99,235,1)"]]
+            red  = [[0, "rgba(254,226,226,1)"], [1, "rgba(185,28,28,1)"]]
 
-            st.caption(f"OI as of **{new_date.strftime('%d %b %Y')}** — click a row to view its time series")
+            st.caption(f"OI as of **{new_date.strftime('%d %b %Y')}** — click any cell to view its time series")
             ddc1, ddc2 = st.columns(2)
 
             with ddc1:
-                st.markdown("**Calls**")
-                call_evt = st.dataframe(
-                    call_flat.style.apply(_style_oi, rgb="66,133,244", subset=["OI"]),
-                    on_select="rerun",
-                    selection_mode="single-row",
-                    key=f"{key_prefix}_dd_call",
+                call_evt = st.plotly_chart(
+                    _heat_fig(call_dd_piv, blue, "Calls"),
+                    on_select="rerun", key=f"{key_prefix}_dd_call",
                     use_container_width=True,
-                    hide_index=True,
                 )
-
             with ddc2:
-                st.markdown("**Puts**")
-                put_evt = st.dataframe(
-                    put_flat.style.apply(_style_oi, rgb="220,75,75", subset=["OI"]),
-                    on_select="rerun",
-                    selection_mode="single-row",
-                    key=f"{key_prefix}_dd_put",
+                put_evt = st.plotly_chart(
+                    _heat_fig(put_dd_piv, red, "Puts"),
+                    on_select="rerun", key=f"{key_prefix}_dd_put",
                     use_container_width=True,
-                    hide_index=True,
                 )
 
             sel_type = sel_strike = sel_mk = None
-            c_rows = call_evt.selection.get("rows", [])
-            p_rows = put_evt.selection.get("rows", [])
+            call_pts = (call_evt.selection or {}).get("points", [])
+            put_pts  = (put_evt.selection  or {}).get("points", [])
 
-            if c_rows and not call_flat.empty:
-                row      = call_flat.iloc[c_rows[0]]
-                sel_type = "Call"
-                sel_strike = row["Strike"]
-                sel_mk   = mk_lookup.get(row["Expiry"])
-            elif p_rows and not put_flat.empty:
-                row      = put_flat.iloc[p_rows[0]]
-                sel_type = "Put"
-                sel_strike = row["Strike"]
-                sel_mk   = mk_lookup.get(row["Expiry"])
+            if call_pts:
+                pt = call_pts[0]
+                sel_type   = "Call"
+                sel_strike = float(pt["y"])
+                sel_mk     = mk_lookup.get(pt["x"])
+            elif put_pts:
+                pt = put_pts[0]
+                sel_type   = "Put"
+                sel_strike = float(pt["y"])
+                sel_mk     = mk_lookup.get(pt["x"])
 
             if sel_type and sel_strike is not None and sel_mk:
                 ric = ric_fn(sel_strike, sel_mk[0], sel_mk[1], sel_type)
@@ -536,7 +544,7 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                             col.markdown(f"**{label}**")
                             col.line_chart(s)
             else:
-                st.caption("Click any row above to view its time series.")
+                st.caption("Click any cell to view its time series.")
 
         with st.expander("OI & Volume Time Series — All Strikes"):
             all_d = sorted(df["date"].dt.date.unique())
