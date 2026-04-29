@@ -51,12 +51,6 @@ def load_ct():
     df["date"] = pd.to_datetime(df["date"])
     return df
 
-@st.cache_data(ttl=1800)
-def load_lcc():
-    df = pd.read_parquet(DB_PATH / "LCC_options_ice.parquet")
-    df["date"] = pd.to_datetime(df["date"])
-    return df
-
 def load_atm():
     try:
         with open(ATM_JSON) as f:
@@ -76,11 +70,10 @@ df_kc    = _try_load(load_kc,  "KC")
 df_cc    = _try_load(load_cc,  "CC")
 df_sb    = _try_load(load_sb,  "SB")
 df_ct    = _try_load(load_ct,  "CT")
-df_lcc   = _try_load(load_lcc, "LCC")
 atm_data = load_atm()
 
 all_dates = set()
-for _df in [df_kc, df_cc, df_sb, df_ct, df_lcc]:
+for _df in [df_kc, df_cc, df_sb, df_ct]:
     if not _df.empty:
         all_dates.update(_df["date"].dt.date.unique())
 available_dates = sorted(all_dates)
@@ -179,6 +172,20 @@ def get_pct_pivot(df, month_keys, opt, old_date, new_date, min_oi):
     result = merged.join(meta[["strike", "mk"]]).dropna(subset=["strike"])
     result = result[result["mk"].notna()]
     piv = result.pivot_table(index="strike", columns="mk", values="val", aggfunc="first")
+    return _clean(piv, month_keys).sort_index(ascending=False)
+
+def get_oi_snapshot_pivot(df, month_keys, opt, snap_date, new_date, min_oi):
+    d = (df[(df["date"].dt.date == snap_date) & (df["option_type"] == opt)]
+         [["ric", "oi"]].set_index("ric"))
+    d = d.copy()
+    d["oi"] = pd.to_numeric(d["oi"], errors="coerce")
+    v = _valid(df, opt, new_date, min_oi)
+    if v is not None:
+        d = d[d.index.isin(v)]
+    meta = _meta(df, opt)
+    result = d.join(meta[["strike", "mk"]]).dropna(subset=["strike"])
+    result = result[result["mk"].notna()]
+    piv = result.pivot_table(index="strike", columns="mk", values="oi", aggfunc="first")
     return _clean(piv, month_keys).sort_index(ascending=False)
 
 
@@ -340,13 +347,6 @@ def _ric_ct(strike, month, year, opt):
     cp  = "C" if opt == "Call" else "P"
     return f"CT {mc}{yy}{cp}{int(round(strike))}"
 
-def _ric_lcc(strike, month, year, opt):
-    """Strike stored as GBP/tonne; multiply by 10 for symbol integer, add -ICE suffix."""
-    mc  = MONTH_TO_CODE[month]
-    yy  = f"{year % 100:02d}"
-    cp  = "C" if opt == "Call" else "P"
-    return f"C {mc}{yy}{cp}{int(round(strike * 10))}-ICE"
-
 
 # ── Commodity tab renderer ─────────────────────────────────────────────────────
 def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
@@ -417,6 +417,27 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                                fmt="{:.0f}", footer=True, title=title,
                                fixed_strikes=all_strikes),
                 unsafe_allow_html=True)
+
+        with st.expander("OI Snapshot — Old Date vs New Date"):
+            call_oi_old = get_oi_snapshot_pivot(df, month_keys, "Call", old_date, new_date, min_oi)
+            put_oi_old  = get_oi_snapshot_pivot(df, month_keys, "Put",  old_date, new_date, min_oi)
+            call_oi_new = get_oi_snapshot_pivot(df, month_keys, "Call", new_date, new_date, min_oi)
+            put_oi_new  = get_oi_snapshot_pivot(df, month_keys, "Put",  new_date, new_date, min_oi)
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                st.markdown(f"**Old Date — {old_date.strftime('%d %b %Y')}**")
+                st.markdown(
+                    butterfly_html(call_oi_old, put_oi_old, atm_val, vol_color, month_keys,
+                                   fmt="{:.0f}", footer=True, title=title,
+                                   fixed_strikes=all_strikes),
+                    unsafe_allow_html=True)
+            with sc2:
+                st.markdown(f"**New Date — {new_date.strftime('%d %b %Y')}**")
+                st.markdown(
+                    butterfly_html(call_oi_new, put_oi_new, atm_val, vol_color, month_keys,
+                                   fmt="{:.0f}", footer=True, title=title,
+                                   fixed_strikes=all_strikes),
+                    unsafe_allow_html=True)
 
         with st.expander("Drill Down — Single Option Time Series"):
             dc1, dc2, dc3 = st.columns(3)
@@ -494,13 +515,12 @@ st.caption(
     f"New Date: **{new_date.strftime('%d %b %Y')}**"
 )
 
-tab_kc, tab_cc, tab_sb, tab_ct, tab_lcc = st.tabs(["KC — Coffee C", "CC — Cocoa", "SB — Sugar #11", "CT — Cotton", "LCC — London Cocoa"])
+tab_kc, tab_cc, tab_sb, tab_ct = st.tabs(["KC — Coffee C", "CC — Cocoa", "SB — Sugar #11", "CT — Cotton"])
 
 atm_kc  = atm_data.get("KC")
 atm_cc  = atm_data.get("CC")
 atm_sb  = atm_data.get("SB")
 atm_ct  = atm_data.get("CT")
-atm_lcc = atm_data.get("LCC")
 
 with tab_kc:
     atm_kc_lbl = (f"{int(atm_kc) if atm_kc == int(atm_kc) else atm_kc}"
@@ -555,15 +575,3 @@ with tab_ct:
         ric_fn=_ric_ct,
     )
 
-with tab_lcc:
-    atm_lcc_lbl = f"£{int(atm_lcc):,}" if atm_lcc is not None else "—"
-    render_commodity_tab(
-        df=df_lcc,
-        atm_val=atm_lcc,
-        atm_label=atm_lcc_lbl,
-        old_date=old_date,
-        new_date=new_date,
-        key_prefix="lcc",
-        title="LCC",
-        ric_fn=_ric_lcc,
-    )
