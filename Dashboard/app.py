@@ -415,21 +415,25 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
     col_oi, col_price, col_mround, col_step, col_atm = st.columns([1, 1.2, 0.8, 0.8, 2])
     with col_oi:
         min_oi = st.number_input("Min OI filter (New Date)", value=0, min_value=0,
-                                  step=10, key=f"{key_prefix}_min_oi")
+                                  step=10, key=f"{key_prefix}_min_oi",
+                                  help="Hide strikes where Open Interest on the New Date is below this threshold.")
     with col_price:
         raw_price = st.number_input(
             "Price", value=float(atm_val) if atm_val is not None else 0.0,
-            format="%.2f", key=f"{key_prefix}_raw_price"
+            format="%.2f", key=f"{key_prefix}_raw_price",
+            help="Raw market price (e.g. last futures settle). The table centers on MROUND(Price, MRound)."
         )
     with col_mround:
         mround_val = st.number_input(
             "MRound", value=_def_mround, min_value=0.01,
-            format="%.2f", key=f"{key_prefix}_mround"
+            format="%.2f", key=f"{key_prefix}_mround",
+            help="Rounding multiple for the ATM. Center ATM = nearest multiple of this value to Price (e.g. Price=302.5, MRound=50 → ATM=300)."
         )
     with col_step:
         custom_step = st.number_input(
             "Step", value=_def_step, min_value=0.01,
-            format="%.2f", key=f"{key_prefix}_custom_step"
+            format="%.2f", key=f"{key_prefix}_custom_step",
+            help="Strike ladder increment. Controls the gap between rows in the table (e.g. 2.5 = every 2.5 ¢/lb for KC, 100 = every $100/mt for CC)."
         )
     with col_atm:
         st.caption(
