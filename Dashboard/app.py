@@ -360,20 +360,25 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
     all_strikes_data = sorted(df["strike"].unique())  # ascending, for step inference
     atm_updated      = atm_data.get("updated", "—")
 
-    # Build ±35-strike centered display window around ATM (descending = high at top)
+    # Build ±35-strike centered display window around ATM, ascending, ATM in the middle.
+    # Generate the full ±35 grid from ATM using inferred step; snap to nearest actual
+    # strike where data exists, keep the generated value (empty row) where it doesn't.
     if atm_val is not None and len(all_strikes_data) > 1:
         diffs = [all_strikes_data[i+1] - all_strikes_data[i]
                  for i in range(len(all_strikes_data)-1)]
-        step  = sorted(diffs)[len(diffs)//2]  # median step (robust to outliers)
-        snap  = {}
-        for s in all_strikes_data:
-            bucket = round((s - atm_val) / step)
-            if bucket not in snap or abs(s - atm_val) < abs(snap[bucket] - atm_val):
-                snap[bucket] = s
+        step  = sorted(diffs)[len(diffs)//2]  # median step
         N = 35
-        all_strikes = sorted([snap[b] for b in range(-N, N+1) if b in snap])
-        if not all_strikes:
-            all_strikes = sorted(all_strikes_data)
+        display = []
+        for i in range(-N, N+1):
+            gen = atm_val + i * step
+            # find nearest actual strike within half a step
+            closest = min(all_strikes_data, key=lambda x: abs(x - gen))
+            display.append(closest if abs(closest - gen) < step * 0.5 else round(gen, 4))
+        # deduplicate while preserving order
+        seen = set(); all_strikes = []
+        for s in display:
+            if s not in seen:
+                seen.add(s); all_strikes.append(s)
     else:
         all_strikes = sorted(all_strikes_data)
 
