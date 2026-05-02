@@ -368,8 +368,9 @@ def get_atm_ts(df: pd.DataFrame) -> pd.DataFrame:
     merged["diff"] = (merged["settle_c"] - merged["settle_p"]).abs()
     idx = merged.groupby(["date", "expiry_month", "expiry_year"])["diff"].idxmin()
     best = merged.loc[idx].copy()
-    best["expiry"] = (best["expiry_month"].map(MONTH_NAMES)
-                      + " '" + best["expiry_year"].astype(str).str[-2:])
+    best["expiry"]     = (best["expiry_month"].map(MONTH_NAMES)
+                          + " '" + best["expiry_year"].astype(str).str[-2:])
+    best["atm_strike"] = best["strike"]
     return best[["date", "expiry", "atm_strike"]].sort_values("date")
 
 
