@@ -385,15 +385,41 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
     else:
         all_strikes = sorted(all_strikes_data)
 
-    col_oi, col_atm = st.columns([1, 3])
+    col_oi, col_catm, col_step, col_atm = st.columns([1, 1.2, 0.8, 2])
     with col_oi:
         min_oi = st.number_input("Min OI filter (New Date)", value=0, min_value=0,
                                   step=10, key=f"{key_prefix}_min_oi")
+    with col_catm:
+        custom_atm = st.number_input(
+            "Center ATM", value=float(atm_val) if atm_val is not None else 0.0,
+            step=float(step) if atm_val is not None and len(all_strikes_data) > 1 else 1.0,
+            format="%.2f", key=f"{key_prefix}_custom_atm"
+        )
+    with col_step:
+        custom_step = st.number_input(
+            "Step", value=float(display_step if display_step else step if atm_val is not None and len(all_strikes_data) > 1 else 1.0),
+            min_value=0.01, format="%.2f", key=f"{key_prefix}_custom_step"
+        )
     with col_atm:
         st.caption(
             f"ATM ({title}): **{atm_label}** as of {atm_updated} | "
             f"Data: {df['date'].min().date()} to {df['date'].max().date()}"
         )
+
+    # Rebuild display strikes using user-controlled ATM + step
+    if len(all_strikes_data) > 1:
+        N = 35
+        display = []
+        for i in range(-N, N+1):
+            gen = custom_atm + i * custom_step
+            if gen <= 0:
+                continue
+            closest = min(all_strikes_data, key=lambda x: abs(x - gen))
+            display.append(closest if abs(closest - gen) < custom_step * 0.6 else round(gen, 4))
+        seen = set(); all_strikes = []
+        for s in display:
+            if s not in seen:
+                seen.add(s); all_strikes.append(s)
 
     call_oi  = get_oi_pivot(df, month_keys, "Call", old_date, new_date, min_oi)
     put_oi   = get_oi_pivot(df, month_keys, "Put",  old_date, new_date, min_oi)
@@ -432,14 +458,14 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
         with cl:
             st.markdown("**OI Change**")
             st.markdown(
-                butterfly_html(call_oi, put_oi, atm_val, oi_color, month_keys,
+                butterfly_html(call_oi, put_oi, custom_atm, oi_color, month_keys,
                                fmt="{:.0f}", footer=True, title=title,
                                fixed_strikes=all_strikes),
                 unsafe_allow_html=True)
         with cr:
             st.markdown("**Volume**")
             st.markdown(
-                butterfly_html(call_vol, put_vol, atm_val, vol_color, month_keys,
+                butterfly_html(call_vol, put_vol, custom_atm, vol_color, month_keys,
                                fmt="{:.0f}", footer=True, title=title,
                                fixed_strikes=all_strikes),
                 unsafe_allow_html=True)
@@ -453,14 +479,14 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
             with sc1:
                 st.markdown(f"**Old Date — {old_date.strftime('%d %b %Y')}**")
                 st.markdown(
-                    butterfly_html(call_oi_old, put_oi_old, atm_val, vol_color, month_keys,
+                    butterfly_html(call_oi_old, put_oi_old, custom_atm, vol_color, month_keys,
                                    fmt="{:.0f}", footer=False, title=title,
                                    fixed_strikes=all_strikes),
                     unsafe_allow_html=True)
             with sc2:
                 st.markdown(f"**New Date — {new_date.strftime('%d %b %Y')}**")
                 st.markdown(
-                    butterfly_html(call_oi_new, put_oi_new, atm_val, vol_color, month_keys,
+                    butterfly_html(call_oi_new, put_oi_new, custom_atm, vol_color, month_keys,
                                    fmt="{:.0f}", footer=False, title=title,
                                    fixed_strikes=all_strikes),
                     unsafe_allow_html=True)
@@ -598,14 +624,14 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
         with pc1:
             st.markdown("**Px Change**")
             st.markdown(
-                butterfly_html(call_px, put_px, atm_val, px_color, month_keys,
+                butterfly_html(call_px, put_px, custom_atm, px_color, month_keys,
                                fmt="{:.2f}", footer=False, title=title,
                                fixed_strikes=all_strikes),
                 unsafe_allow_html=True)
         with pc2:
             st.markdown("**% Change**")
             st.markdown(
-                butterfly_html(call_pct, put_pct, atm_val, px_color, month_keys,
+                butterfly_html(call_pct, put_pct, custom_atm, px_color, month_keys,
                                fmt="{:.1f}", footer=False, sfx="%", title=title,
                                fixed_strikes=all_strikes),
                 unsafe_allow_html=True)
