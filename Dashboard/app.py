@@ -230,7 +230,8 @@ _CSS = """<style>
 
 
 def butterfly_html(cpiv, ppiv, atm, cfn, month_keys, fmt="{:.0f}",
-                   footer=True, sfx="", title="", atm_tol=None, fixed_strikes=None):
+                   footer=True, sfx="", title="", atm_tol=None, fixed_strikes=None,
+                   snap_tol=None):
     ccols = list(reversed(month_keys))
     pcols = list(month_keys)
 
@@ -277,8 +278,21 @@ def butterfly_html(cpiv, ppiv, atm, cfn, month_keys, fmt="{:.0f}",
           + "".join(f'<th class="ph">{MONTH_NAMES[m]}</th>' for m, y in pcols)
           + '</tr>')
 
+    _piv_idx_cache = {}
     def cv(piv, s, mk):
-        if piv.empty or s not in piv.index or mk not in piv.columns: return np.nan
+        if piv.empty or mk not in piv.columns: return np.nan
+        # nearest-key lookup within snap_tol (tolerates display grid ≠ data grid)
+        if snap_tol is not None:
+            pid = id(piv)
+            if pid not in _piv_idx_cache:
+                _piv_idx_cache[pid] = np.array(piv.index.tolist(), dtype=float)
+            idx_arr = _piv_idx_cache[pid]
+            if len(idx_arr) == 0: return np.nan
+            diffs = np.abs(idx_arr - s)
+            if diffs.min() > snap_tol: return np.nan
+            s = idx_arr[diffs.argmin()]
+        elif s not in piv.index:
+            return np.nan
         v = piv.at[s, mk]
         return float(v) if not pd.isna(v) else np.nan
 
@@ -385,30 +399,17 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
     all_strikes_data = sorted(df["strike"].unique())  # ascending, for step inference
     atm_updated      = atm_data.get("updated", "—")
 
-    # Build ±35-strike centered display window around ATM, ascending, ATM in the middle.
-    # Generate the full ±35 grid from ATM; snap each generated strike to the nearest
-    # actual parquet strike within tolerance (shows data), else keep as empty row.
+    # Initial display grid (overridden below once user inputs are read)
     if atm_val is not None and len(all_strikes_data) > 1:
         if display_step is not None:
             step = display_step
         else:
             diffs = [all_strikes_data[i+1] - all_strikes_data[i]
                      for i in range(len(all_strikes_data)-1)]
-            step = sorted(diffs)[len(diffs)//2]  # median step
-        N = 35
-        display = []
-        for i in range(-N, N+1):
-            gen = atm_val + i * step
-            if gen <= 0:
-                continue
-            closest = min(all_strikes_data, key=lambda x: abs(x - gen))
-            display.append(closest if abs(closest - gen) < step * 0.6 else round(gen, 4))
-        seen = set(); all_strikes = []
-        for s in display:
-            if s not in seen:
-                seen.add(s); all_strikes.append(s)
+            step = sorted(diffs)[len(diffs)//2]
     else:
-        all_strikes = sorted(all_strikes_data)
+        step = 1.0
+    snap_tol = step / 2
 
     _def_step   = float(display_step if display_step else (step if atm_val is not None and len(all_strikes_data) > 1 else 1.0))
     _def_mround = float(mround_default if mround_default is not None else _def_step)
@@ -445,20 +446,13 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
     custom_atm = round(raw_price / mround_val) * mround_val if mround_val > 0 else raw_price
     st.caption(f"Center ATM: **{custom_atm:,.2f}** = MROUND({raw_price:,.2f}, {mround_val:,.2f})")
 
-    # Rebuild display strikes using user-controlled ATM + step
-    if len(all_strikes_data) > 1:
-        N = 35
-        display = []
-        for i in range(-N, N+1):
-            gen = custom_atm + i * custom_step
-            if gen <= 0:
-                continue
-            closest = min(all_strikes_data, key=lambda x: abs(x - gen))
-            display.append(closest if abs(closest - gen) < custom_step * 0.6 else round(gen, 4))
-        seen = set(); all_strikes = []
-        for s in display:
-            if s not in seen:
-                seen.add(s); all_strikes.append(s)
+    # Rebuild display strikes as a pure arithmetic grid — exact step, ATM centered.
+    # Data is fetched via nearest-key lookup in butterfly_html (snap_tol = step/2).
+    N = 35
+    all_strikes = [round(custom_atm + i * custom_step, 6)
+                   for i in range(-N, N+1)
+                   if custom_atm + i * custom_step > 0]
+    snap_tol = custom_step / 2
 
     call_oi  = get_oi_pivot(df, month_keys, "Call", old_date, new_date, min_oi)
     put_oi   = get_oi_pivot(df, month_keys, "Put",  old_date, new_date, min_oi)
@@ -499,14 +493,14 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
             st.markdown(
                 butterfly_html(call_oi, put_oi, custom_atm, oi_color, month_keys,
                                fmt="{:.0f}", footer=True, title=title,
-                               fixed_strikes=all_strikes),
+                               fixed_strikes=all_strikes, snap_tol=snap_tol),
                 unsafe_allow_html=True)
         with cr:
             st.markdown("**Volume**")
             st.markdown(
                 butterfly_html(call_vol, put_vol, custom_atm, vol_color, month_keys,
                                fmt="{:.0f}", footer=True, title=title,
-                               fixed_strikes=all_strikes),
+                               fixed_strikes=all_strikes, snap_tol=snap_tol),
                 unsafe_allow_html=True)
 
         with st.expander("OI Snapshot — Old Date vs New Date"):
@@ -520,14 +514,14 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                 st.markdown(
                     butterfly_html(call_oi_old, put_oi_old, custom_atm, vol_color, month_keys,
                                    fmt="{:.0f}", footer=False, title=title,
-                                   fixed_strikes=all_strikes),
+                                   fixed_strikes=all_strikes, snap_tol=snap_tol),
                     unsafe_allow_html=True)
             with sc2:
                 st.markdown(f"**New Date — {new_date.strftime('%d %b %Y')}**")
                 st.markdown(
                     butterfly_html(call_oi_new, put_oi_new, custom_atm, vol_color, month_keys,
                                    fmt="{:.0f}", footer=False, title=title,
-                                   fixed_strikes=all_strikes),
+                                   fixed_strikes=all_strikes, snap_tol=snap_tol),
                     unsafe_allow_html=True)
 
         with st.expander("Drill Down — Single Option Time Series"):
@@ -686,14 +680,14 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
             st.markdown(
                 butterfly_html(call_px, put_px, custom_atm, px_color, month_keys,
                                fmt="{:.2f}", footer=False, title=title,
-                               fixed_strikes=all_strikes),
+                               fixed_strikes=all_strikes, snap_tol=snap_tol),
                 unsafe_allow_html=True)
         with pc2:
             st.markdown("**% Change**")
             st.markdown(
                 butterfly_html(call_pct, put_pct, custom_atm, px_color, month_keys,
                                fmt="{:.1f}", footer=False, sfx="%", title=title,
-                               fixed_strikes=all_strikes),
+                               fixed_strikes=all_strikes, snap_tol=snap_tol),
                 unsafe_allow_html=True)
 
 
