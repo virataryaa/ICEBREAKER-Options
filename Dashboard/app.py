@@ -413,46 +413,69 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
 
     _def_step   = float(display_step if display_step else (step if atm_val is not None and len(all_strikes_data) > 1 else 1.0))
     _def_mround = float(mround_default if mround_default is not None else _def_step)
-    col_oi, col_price, col_mround, col_step, col_atm = st.columns([1, 1.2, 0.8, 0.8, 2])
-    with col_oi:
-        min_oi = st.number_input("Min OI filter (New Date)", value=0, min_value=0,
-                                  step=10, key=f"{key_prefix}_min_oi",
-                                  help="Hide strikes where Open Interest on the New Date is below this threshold.")
-    with col_price:
-        raw_price = st.number_input(
-            "Price", value=float(atm_val) if atm_val is not None else 0.0,
-            format="%.2f", key=f"{key_prefix}_raw_price",
-            help="Raw market price (e.g. last futures settle). The table centers on MROUND(Price, MRound)."
-        )
-    with col_mround:
-        mround_val = st.number_input(
-            "MRound", value=_def_mround, min_value=0.01,
-            format="%.2f", key=f"{key_prefix}_mround",
-            help="Rounding multiple for the ATM. Center ATM = nearest multiple of this value to Price (e.g. Price=302.5, MRound=50 → ATM=300)."
-        )
-    with col_step:
-        custom_step = st.number_input(
-            "Step", value=_def_step, min_value=0.01,
-            format="%.2f", key=f"{key_prefix}_custom_step",
-            help="Strike ladder increment. Controls the gap between rows in the table (e.g. 2.5 = every 2.5 ¢/lb for KC, 100 = every $100/mt for CC)."
-        )
-    with col_atm:
+
+    with st.expander("Controls", expanded=True):
+        col_oi, col_price, col_mround, col_step, col_mode = st.columns([1, 1.2, 0.8, 0.8, 1.4])
+        with col_oi:
+            min_oi = st.number_input("Min OI filter (New Date)", value=0, min_value=0,
+                                      step=10, key=f"{key_prefix}_min_oi",
+                                      help="Hide strikes where Open Interest on the New Date is below this threshold.")
+        with col_price:
+            raw_price = st.number_input(
+                "Price", value=float(atm_val) if atm_val is not None else 0.0,
+                format="%.2f", key=f"{key_prefix}_raw_price",
+                help="Raw market price (e.g. last futures settle). The table centers on MROUND(Price, MRound)."
+            )
+        with col_mround:
+            mround_val = st.number_input(
+                "MRound", value=_def_mround, min_value=0.01,
+                format="%.2f", key=f"{key_prefix}_mround",
+                help="Rounding multiple for the ATM. Center ATM = nearest multiple of this value to Price (e.g. Price=302.5, MRound=50 → ATM=300)."
+            )
+        with col_step:
+            custom_step = st.number_input(
+                "Step", value=_def_step, min_value=0.01,
+                format="%.2f", key=f"{key_prefix}_custom_step",
+                help="Strike ladder increment — gap between rows in the table (e.g. 2.5 ¢/lb for KC, 100 $/mt for CC)."
+            )
+        with col_mode:
+            strike_mode = st.radio(
+                "Strike mode", ["Nearest", "Exact"],
+                index=0, horizontal=True,
+                key=f"{key_prefix}_strike_mode",
+                help=(
+                    "Nearest: grid rows at exact step intervals, data pulled from the "
+                    "closest parquet strike within Step/2 — clean uniform ladder.\n\n"
+                    "Exact: rows are the actual ICE strikes from the parquet, centered "
+                    "on ATM — no interpolation, raw exchange data only."
+                )
+            )
+
+        # ATM center = MROUND(price, mround)
+        custom_atm = round(raw_price / mround_val) * mround_val if mround_val > 0 else raw_price
         st.caption(
-            f"ATM ({title}): **{atm_label}** as of {atm_updated} | "
+            f"Center ATM: **{custom_atm:,.2f}** = MROUND({raw_price:,.2f}, {mround_val:,.2f})  |  "
+            f"ATM ({title}): **{atm_label}** as of {atm_updated}  |  "
             f"Data: {df['date'].min().date()} to {df['date'].max().date()}"
         )
 
-    # ATM center = MROUND(price, mround)
-    custom_atm = round(raw_price / mround_val) * mround_val if mround_val > 0 else raw_price
-    st.caption(f"Center ATM: **{custom_atm:,.2f}** = MROUND({raw_price:,.2f}, {mround_val:,.2f})")
-
-    # Rebuild display strikes as a pure arithmetic grid — exact step, ATM centered.
-    # Data is fetched via nearest-key lookup in butterfly_html (snap_tol = step/2).
+    # Build strike grid based on mode
     N = 35
-    all_strikes = [round(custom_atm + i * custom_step, 6)
-                   for i in range(-N, N+1)
-                   if custom_atm + i * custom_step > 0]
-    snap_tol = custom_step / 2
+    if strike_mode == "Nearest":
+        # Pure arithmetic grid — data fetched via nearest-key lookup (snap_tol = step/2)
+        all_strikes = [round(custom_atm + i * custom_step, 6)
+                       for i in range(-N, N+1)
+                       if custom_atm + i * custom_step > 0]
+        snap_tol = custom_step / 2
+    else:
+        # Exact mode — use actual parquet strikes centered on ATM
+        snap = {}
+        for s in all_strikes_data:
+            bucket = round((s - custom_atm) / custom_step)
+            if bucket not in snap or abs(s - custom_atm) < abs(snap[bucket] - custom_atm):
+                snap[bucket] = s
+        all_strikes = sorted([snap[b] for b in range(-N, N+1) if b in snap])
+        snap_tol = None  # exact lookup only
 
     call_oi  = get_oi_pivot(df, month_keys, "Call", old_date, new_date, min_oi)
     put_oi   = get_oi_pivot(df, month_keys, "Put",  old_date, new_date, min_oi)
