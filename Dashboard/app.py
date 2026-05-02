@@ -93,6 +93,15 @@ with st.sidebar:
     if old_date == new_date:
         st.warning("Old Date and New Date are the same.")
 
+    st.divider()
+    st.markdown("**Latest data available**")
+    for _label, _df in [("KC", df_kc), ("CC", df_cc), ("SB", df_sb), ("CT", df_ct)]:
+        if not _df.empty:
+            _latest = _df["date"].max().date().strftime("%d %b %Y")
+            st.caption(f"{_label} — {_latest}")
+        else:
+            st.caption(f"{_label} — no data")
+
 
 # ── Pivot helpers (all parameterised) ─────────────────────────────────────────
 def _month_keys(df):
@@ -390,7 +399,8 @@ def get_atm_ts(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── Commodity tab renderer ─────────────────────────────────────────────────────
 def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
-                         key_prefix, title, ric_fn, display_step=None, mround_default=None):
+                         key_prefix, title, ric_fn, display_step=None, mround_default=None,
+                         ingest_note=""):
     if df.empty:
         st.info(f"No data available for {title}.")
         return
@@ -430,13 +440,20 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
             mround_val = st.number_input(
                 "MRound", value=_def_mround, min_value=0.01,
                 format="%.2f", key=f"{key_prefix}_mround",
-                help="Rounding multiple for the ATM. Center ATM = nearest multiple of this value to Price (e.g. Price=302.5, MRound=50 → ATM=300)."
+                help=(
+                    "Rounding multiple for the ATM. Center ATM = nearest multiple of this value to Price "
+                    "(e.g. Price=302.5, MRound=50 → ATM=300).\n\n"
+                    + (f"Ingest uses: {ingest_note}" if ingest_note else "")
+                )
             )
         with col_step:
             custom_step = st.number_input(
                 "Step", value=_def_step, min_value=0.01,
                 format="%.2f", key=f"{key_prefix}_custom_step",
-                help="Strike ladder increment — gap between rows in the table (e.g. 2.5 ¢/lb for KC, 100 $/mt for CC)."
+                help=(
+                    "Strike ladder increment — gap between rows in the table.\n\n"
+                    + (f"Ingest uses: {ingest_note}" if ingest_note else "")
+                )
             )
         with col_mode:
             strike_mode = st.radio(
@@ -735,7 +752,8 @@ with tab_kc:
         df=df_kc, atm_val=atm_kc, atm_label=atm_kc_lbl,
         old_date=old_date, new_date=new_date,
         key_prefix="kc", title="KC", ric_fn=_ric_kc,
-        mround_default=50,   # ¢/lb
+        mround_default=50,
+        ingest_note="MRound=50 ¢/lb for ATM snap | Step=2.5 ¢/lb (symbol unit 25)",
     )
 
 with tab_cc:
@@ -744,7 +762,8 @@ with tab_cc:
         df=df_cc, atm_val=atm_cc, atm_label=atm_cc_lbl,
         old_date=old_date, new_date=new_date,
         key_prefix="cc", title="CC", ric_fn=_ric_cc,
-        display_step=100, mround_default=300,   # $/mt
+        display_step=100, mround_default=300,
+        ingest_note="MRound=300 $/mt for ATM snap | Step=5 $/cwt ≈ 110 $/mt in parquet (ICE native)",
     )
 
 with tab_sb:
@@ -753,7 +772,8 @@ with tab_sb:
         df=df_sb, atm_val=atm_sb, atm_label=atm_sb_lbl,
         old_date=old_date, new_date=new_date,
         key_prefix="sb", title="SB", ric_fn=_ric_sb,
-        mround_default=0.25,   # cts/lb
+        mround_default=0.25,
+        ingest_note="MRound=0.25 cts/lb for ATM snap | Step=0.25 cts/lb (symbol unit 25 = 1/100 cts/lb)",
     )
 
 with tab_ct:
@@ -762,6 +782,7 @@ with tab_ct:
         df=df_ct, atm_val=atm_ct, atm_label=atm_ct_lbl,
         old_date=old_date, new_date=new_date,
         key_prefix="ct", title="CT", ric_fn=_ric_ct,
-        mround_default=1,   # cts/lb
+        mround_default=1,
+        ingest_note="MRound=1 cts/lb for ATM snap | Step=1 cts/lb (integer strikes)",
     )
 
