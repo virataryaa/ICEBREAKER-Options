@@ -235,7 +235,7 @@ def butterfly_html(cpiv, ppiv, atm, cfn, month_keys, fmt="{:.0f}",
     pcols = list(month_keys)
 
     if fixed_strikes is not None:
-        strikes = list(fixed_strikes)  # caller controls order (desc = high at top)
+        strikes = list(fixed_strikes)  # caller controls order (asc = low at top, ATM centered)
     else:
         strikes_set = set()
         if not cpiv.empty: strikes_set.update(cpiv.index.tolist())
@@ -371,11 +371,11 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
             if bucket not in snap or abs(s - atm_val) < abs(snap[bucket] - atm_val):
                 snap[bucket] = s
         N = 35
-        all_strikes = sorted([snap[b] for b in range(-N, N+1) if b in snap], reverse=True)
+        all_strikes = sorted([snap[b] for b in range(-N, N+1) if b in snap])
         if not all_strikes:
-            all_strikes = sorted(all_strikes_data, reverse=True)
+            all_strikes = sorted(all_strikes_data)
     else:
-        all_strikes = sorted(all_strikes_data, reverse=True)
+        all_strikes = sorted(all_strikes_data)
 
     col_oi, col_atm = st.columns([1, 3])
     with col_oi:
