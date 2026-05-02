@@ -1,7 +1,9 @@
 """
 CC_Ingest.py -- CC Cocoa Options (ICE Connect)
 Fetches last 10 days, live options only (OI > 0), upserts into parquet.
-Strike range: ATM +/- 20 strikes (5pt increments) centred on %CC 1! last settle.
+Strike range: ATM +/- 80 strikes (5pt increments) centred on CC 1! last settle.
+Covers ~0-560 $/cwt (0-12,350 $/mt) capturing full historical strike range.
+Pre-filters full symbol universe via get_quotes (OI > 0) before fetching timeseries.
 Sequential batches -- no threading (ICE COM is not thread-safe).
 """
 
@@ -21,9 +23,9 @@ ATM_PATH   = Path(__file__).resolve().parent.parent / "Dashboard" / "atm.json"
 TODAY      = datetime.date.today().isoformat()
 FETCH_FROM = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
 RETRIES    = 3
-BATCH_SIZE = 50
+BATCH_SIZE = 100
 N_MONTHS   = 12   # next N calendar months starting from next month
-ATM_WING   = 20   # strikes each side of ATM
+ATM_WING   = 80   # strikes each side of ATM — covers full cocoa historical range (~0-560 $/cwt)
 STRIKE_STEP  = 5        # CC ICE symbols use 5pt $/cwt increments
 MT_TO_CWT    = 22.046  # 1 metric ton = 22.046 cwt (100lb units)
 
@@ -56,18 +58,18 @@ def active_contracts() -> list[tuple[str, int]]:
 def get_atm_strike() -> float:
     """Fetch %CC 1! last settle and round to nearest STRIKE_STEP increment."""
     raw = ice.get_timeseries(
-        ["%CC 1!"], ["Settle"], granularity="D",
+        ["CC 1!"], ["Settle"], granularity="D",
         start_date=(datetime.date.today() - datetime.timedelta(days=5)).isoformat(),
         end_date=TODAY
     )
     if not raw or len(raw) < 2:
-        raise RuntimeError("Could not fetch %CC 1! price for ATM calculation")
+        raise RuntimeError("Could not fetch CC 1! price for ATM calculation")
     last_settle_mt = next(
         (float(row[1]) for row in reversed(raw[1:]) if row[1] is not None),
         None
     )
     if last_settle_mt is None:
-        raise RuntimeError("No valid settle found for %CC 1!")
+        raise RuntimeError("No valid settle found for CC 1!")
     # ICE CC options are quoted in $/cwt; %CC 1! returns $/metric ton
     last_settle_cwt = last_settle_mt / MT_TO_CWT
     atm = round(last_settle_cwt / STRIKE_STEP) * STRIKE_STEP
@@ -87,8 +89,8 @@ def get_atm_strike() -> float:
 
 
 def make_strikes(atm: float) -> list[float]:
-    """ATM +/- ATM_WING strikes in STRIKE_STEP increments."""
-    return [atm + i * STRIKE_STEP for i in range(-ATM_WING, ATM_WING + 1)]
+    """ATM +/- ATM_WING strikes in STRIKE_STEP increments; floored at STRIKE_STEP to avoid zero/negative."""
+    return [s for s in (atm + i * STRIKE_STEP for i in range(-ATM_WING, ATM_WING + 1)) if s >= STRIKE_STEP]
 
 
 def make_symbols(month_code: str, year: int, strikes: list[float]) -> list[str]:
@@ -99,6 +101,17 @@ def make_symbols(month_code: str, year: int, strikes: list[float]) -> list[str]:
         syms.append(f"CC {month_code}{yy}C{r}")
         syms.append(f"CC {month_code}{yy}P{r}")
     return syms
+
+
+def pre_filter(symbols: list[str]) -> list[str]:
+    """Keep only symbols with current OI > 0 via a fast get_quotes snapshot."""
+    active = []
+    for i in range(0, len(symbols), 100):
+        q = ice.get_quotes(symbols[i:i + 100], ["Open Interest"])
+        for row in q[1:]:
+            if row[1] is not None and row[1] > 0:
+                active.append(row[0])
+    return active
 
 
 def parse_symbol(sym: str) -> dict | None:
@@ -157,13 +170,18 @@ def build() -> pd.DataFrame:
     strikes   = make_strikes(atm)
     contracts = active_contracts()
 
-    all_batches = []
+    all_syms = []
     for mc, yr in contracts:
-        syms = make_symbols(mc, yr, strikes)
-        for i in range(0, len(syms), BATCH_SIZE):
-            all_batches.append(syms[i: i + BATCH_SIZE])
+        all_syms.extend(make_symbols(mc, yr, strikes))
 
-    print(f"Fetching last 10 days ({FETCH_FROM} to {TODAY})")
+    print(f"Universe: {len(all_syms)} symbols  ->  pre-filtering via get_quotes...", flush=True)
+    active_syms = pre_filter(all_syms)
+    print(f"Active (OI > 0): {len(active_syms)} / {len(all_syms)}")
+
+    all_batches = [active_syms[i:i + BATCH_SIZE] for i in range(0, len(active_syms), BATCH_SIZE)]
+
+    n_days = (datetime.date.today() - datetime.date.fromisoformat(FETCH_FROM)).days
+    print(f"Fetching last {n_days} days ({FETCH_FROM} to {TODAY})")
     print(f"Contracts: {len(contracts)} | Strikes: ATM {atm:.0f} +/-{ATM_WING} (step {STRIKE_STEP}) | Batches: {len(all_batches)}")
 
     parts = []
@@ -206,6 +224,10 @@ def build() -> pd.DataFrame:
     new_df["expiry_year"]  = new_df["expiry_year"].astype("int64")
     new_df = new_df[["date", "settle", "oi", "volume", "ric",
                      "option_type", "strike", "expiry_month", "expiry_year"]]
+
+    # ICE publishes volume on T+1 — shift back 1 row per RIC to align with trading date.
+    new_df = new_df.sort_values(["ric", "date"])
+    new_df["volume"] = new_df.groupby("ric")["volume"].shift(-1)
 
     # Upsert
     if OUT_PATH.exists():
