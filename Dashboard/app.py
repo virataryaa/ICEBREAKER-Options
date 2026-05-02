@@ -235,7 +235,7 @@ def butterfly_html(cpiv, ppiv, atm, cfn, month_keys, fmt="{:.0f}",
     pcols = list(month_keys)
 
     if fixed_strikes is not None:
-        strikes = list(fixed_strikes)  # already sorted asc by caller
+        strikes = list(fixed_strikes)  # caller controls order (desc = high at top)
     else:
         strikes_set = set()
         if not cpiv.empty: strikes_set.update(cpiv.index.tolist())
@@ -356,9 +356,26 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
         st.info(f"No data available for {title}.")
         return
 
-    month_keys  = _month_keys(df)
-    all_strikes = sorted(df["strike"].unique())  # low to high, top to bottom
-    atm_updated = atm_data.get("updated", "—")
+    month_keys       = _month_keys(df)
+    all_strikes_data = sorted(df["strike"].unique())  # ascending, for step inference
+    atm_updated      = atm_data.get("updated", "—")
+
+    # Build ±35-strike centered display window around ATM (descending = high at top)
+    if atm_val is not None and len(all_strikes_data) > 1:
+        diffs = [all_strikes_data[i+1] - all_strikes_data[i]
+                 for i in range(len(all_strikes_data)-1)]
+        step  = sorted(diffs)[len(diffs)//2]  # median step (robust to outliers)
+        snap  = {}
+        for s in all_strikes_data:
+            bucket = round((s - atm_val) / step)
+            if bucket not in snap or abs(s - atm_val) < abs(snap[bucket] - atm_val):
+                snap[bucket] = s
+        N = 35
+        all_strikes = sorted([snap[b] for b in range(-N, N+1) if b in snap], reverse=True)
+        if not all_strikes:
+            all_strikes = sorted(all_strikes_data, reverse=True)
+    else:
+        all_strikes = sorted(all_strikes_data, reverse=True)
 
     col_oi, col_atm = st.columns([1, 3])
     with col_oi:
