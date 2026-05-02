@@ -351,7 +351,7 @@ def _ric_ct(strike, month, year, opt):
 
 # ── Commodity tab renderer ─────────────────────────────────────────────────────
 def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
-                         key_prefix, title, ric_fn, display_step=None):
+                         key_prefix, title, ric_fn, display_step=None, mround_default=None):
     if df.empty:
         st.info(f"No data available for {title}.")
         return
@@ -385,26 +385,36 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
     else:
         all_strikes = sorted(all_strikes_data)
 
-    col_oi, col_catm, col_step, col_atm = st.columns([1, 1.2, 0.8, 2])
+    _def_step   = float(display_step if display_step else (step if atm_val is not None and len(all_strikes_data) > 1 else 1.0))
+    _def_mround = float(mround_default if mround_default is not None else _def_step)
+    col_oi, col_price, col_mround, col_step, col_atm = st.columns([1, 1.2, 0.8, 0.8, 2])
     with col_oi:
         min_oi = st.number_input("Min OI filter (New Date)", value=0, min_value=0,
                                   step=10, key=f"{key_prefix}_min_oi")
-    with col_catm:
-        custom_atm = st.number_input(
-            "Center ATM", value=float(atm_val) if atm_val is not None else 0.0,
-            step=float(step) if atm_val is not None and len(all_strikes_data) > 1 else 1.0,
-            format="%.2f", key=f"{key_prefix}_custom_atm"
+    with col_price:
+        raw_price = st.number_input(
+            "Price", value=float(atm_val) if atm_val is not None else 0.0,
+            format="%.2f", key=f"{key_prefix}_raw_price"
+        )
+    with col_mround:
+        mround_val = st.number_input(
+            "MRound", value=_def_mround, min_value=0.01,
+            format="%.2f", key=f"{key_prefix}_mround"
         )
     with col_step:
         custom_step = st.number_input(
-            "Step", value=float(display_step if display_step else step if atm_val is not None and len(all_strikes_data) > 1 else 1.0),
-            min_value=0.01, format="%.2f", key=f"{key_prefix}_custom_step"
+            "Step", value=_def_step, min_value=0.01,
+            format="%.2f", key=f"{key_prefix}_custom_step"
         )
     with col_atm:
         st.caption(
             f"ATM ({title}): **{atm_label}** as of {atm_updated} | "
             f"Data: {df['date'].min().date()} to {df['date'].max().date()}"
         )
+
+    # ATM center = MROUND(price, mround)
+    custom_atm = round(raw_price / mround_val) * mround_val if mround_val > 0 else raw_price
+    st.caption(f"Center ATM: **{custom_atm:,.2f}** = MROUND({raw_price:,.2f}, {mround_val:,.2f})")
 
     # Rebuild display strikes using user-controlled ATM + step
     if len(all_strikes_data) > 1:
@@ -655,53 +665,36 @@ with tab_kc:
     atm_kc_lbl = (f"{int(atm_kc) if atm_kc == int(atm_kc) else atm_kc}"
                   if atm_kc is not None else "—")
     render_commodity_tab(
-        df=df_kc,
-        atm_val=atm_kc,
-        atm_label=atm_kc_lbl,
-        old_date=old_date,
-        new_date=new_date,
-        key_prefix="kc",
-        title="KC",
-        ric_fn=_ric_kc,
+        df=df_kc, atm_val=atm_kc, atm_label=atm_kc_lbl,
+        old_date=old_date, new_date=new_date,
+        key_prefix="kc", title="KC", ric_fn=_ric_kc,
+        mround_default=50,   # ¢/lb
     )
 
 with tab_cc:
     atm_cc_lbl = f"{int(atm_cc):,}" if atm_cc is not None else "—"
     render_commodity_tab(
-        df=df_cc,
-        atm_val=atm_cc,
-        atm_label=atm_cc_lbl,
-        old_date=old_date,
-        new_date=new_date,
-        key_prefix="cc",
-        title="CC",
-        ric_fn=_ric_cc,
-        display_step=100,
+        df=df_cc, atm_val=atm_cc, atm_label=atm_cc_lbl,
+        old_date=old_date, new_date=new_date,
+        key_prefix="cc", title="CC", ric_fn=_ric_cc,
+        display_step=100, mround_default=300,   # $/mt
     )
 
 with tab_sb:
     atm_sb_lbl = f"{atm_sb:.2f}" if atm_sb is not None else "—"
     render_commodity_tab(
-        df=df_sb,
-        atm_val=atm_sb,
-        atm_label=atm_sb_lbl,
-        old_date=old_date,
-        new_date=new_date,
-        key_prefix="sb",
-        title="SB",
-        ric_fn=_ric_sb,
+        df=df_sb, atm_val=atm_sb, atm_label=atm_sb_lbl,
+        old_date=old_date, new_date=new_date,
+        key_prefix="sb", title="SB", ric_fn=_ric_sb,
+        mround_default=0.25,   # cts/lb
     )
 
 with tab_ct:
     atm_ct_lbl = f"{int(atm_ct)}" if atm_ct is not None else "—"
     render_commodity_tab(
-        df=df_ct,
-        atm_val=atm_ct,
-        atm_label=atm_ct_lbl,
-        old_date=old_date,
-        new_date=new_date,
-        key_prefix="ct",
-        title="CT",
-        ric_fn=_ric_ct,
+        df=df_ct, atm_val=atm_ct, atm_label=atm_ct_lbl,
+        old_date=old_date, new_date=new_date,
+        key_prefix="ct", title="CT", ric_fn=_ric_ct,
+        mround_default=1,   # cts/lb
     )
 
