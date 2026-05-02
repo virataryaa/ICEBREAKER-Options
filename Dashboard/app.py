@@ -349,6 +349,30 @@ def _ric_ct(strike, month, year, opt):
     return f"CT {mc}{yy}{cp}{int(round(strike))}"
 
 
+# ── ATM time series (put-call parity) ─────────────────────────────────────────
+def get_atm_ts(df: pd.DataFrame) -> pd.DataFrame:
+    """For each date × expiry, find the strike where |call_settle - put_settle| is
+    minimised (put-call parity ⟹ that strike = underlying price).  Returns a
+    DataFrame with columns [date, expiry, atm_strike]."""
+    calls = (df[df["option_type"] == "Call"]
+             [["date", "expiry_month", "expiry_year", "strike", "settle"]]
+             .dropna(subset=["settle"]))
+    puts  = (df[df["option_type"] == "Put"]
+             [["date", "expiry_month", "expiry_year", "strike", "settle"]]
+             .dropna(subset=["settle"]))
+    merged = calls.merge(puts,
+                         on=["date", "expiry_month", "expiry_year", "strike"],
+                         suffixes=("_c", "_p"))
+    if merged.empty:
+        return pd.DataFrame(columns=["date", "expiry", "atm_strike"])
+    merged["diff"] = (merged["settle_c"] - merged["settle_p"]).abs()
+    idx = merged.groupby(["date", "expiry_month", "expiry_year"])["diff"].idxmin()
+    best = merged.loc[idx].copy()
+    best["expiry"] = (best["expiry_month"].map(MONTH_NAMES)
+                      + " '" + best["expiry_year"].astype(str).str[-2:])
+    return best[["date", "expiry", "atm_strike"]].sort_values("date")
+
+
 # ── Commodity tab renderer ─────────────────────────────────────────────────────
 def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                          key_prefix, title, ric_fn, display_step=None, mround_default=None):
@@ -623,6 +647,27 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                     vol_w = daily.pivot(index="date", columns="option_type", values="volume")
                     vol_w.columns.name = None
                     st.line_chart(vol_w.rename(columns={"Call": "Call Vol", "Put": "Put Vol"}))
+
+        with st.expander("ATM Time Series — Implied from Put-Call Parity"):
+            atm_ts = get_atm_ts(df)
+            if atm_ts.empty:
+                st.info("Not enough paired call/put data to compute ATM time series.")
+            else:
+                expiries_avail = sorted(atm_ts["expiry"].unique())
+                sel_expiries = st.multiselect(
+                    "Expiries to show", expiries_avail,
+                    default=expiries_avail[:3],
+                    key=f"{key_prefix}_atm_ts_exp"
+                )
+                plot_df = (atm_ts[atm_ts["expiry"].isin(sel_expiries)]
+                           .pivot(index="date", columns="expiry", values="atm_strike"))
+                plot_df.columns.name = None
+                if not plot_df.empty:
+                    st.line_chart(plot_df)
+                    st.caption(
+                        "Strike where |call settle − put settle| is smallest on each date — "
+                        "tracks the underlying futures price via put-call parity."
+                    )
 
     with inner2:
         call_px  = get_px_pivot(df, month_keys, "Call", old_date, new_date, min_oi)
