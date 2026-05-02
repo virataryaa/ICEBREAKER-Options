@@ -28,6 +28,7 @@ N_MONTHS   = 12   # next N calendar months starting from next month
 ATM_WING   = 80   # strikes each side of ATM — covers full cocoa historical range (~0-560 $/cwt)
 STRIKE_STEP  = 5        # CC ICE symbols use 5pt $/cwt increments
 MT_TO_CWT    = 22.046  # 1 metric ton = 22.046 cwt (100lb units)
+ATM_MROUND_MT = 300    # dashboard ATM snaps to nearest 300 $/mt (display centering only)
 
 FIELDS = ["Settle", "Volume", "Open Interest"]
 
@@ -70,22 +71,24 @@ def get_atm_strike() -> float:
     )
     if last_settle_mt is None:
         raise RuntimeError("No valid settle found for CC 1!")
-    # ICE CC options are quoted in $/cwt; %CC 1! returns $/metric ton
+    # ICE CC options are quoted in $/cwt; CC 1! returns $/metric ton
     last_settle_cwt = last_settle_mt / MT_TO_CWT
-    atm = round(last_settle_cwt / STRIKE_STEP) * STRIKE_STEP
-    print(f"CC 1! last settle: {last_settle_mt:.2f} $/mt  =  {last_settle_cwt:.2f} $/cwt  ->  ATM strike: {atm:.0f} $/cwt")
+    atm_cwt = round(last_settle_cwt / STRIKE_STEP) * STRIKE_STEP   # for symbol generation
+    atm_mt  = round(last_settle_mt / ATM_MROUND_MT) * ATM_MROUND_MT  # for dashboard centering
+    print(f"CC 1! last settle: {last_settle_mt:.2f} $/mt  =  {last_settle_cwt:.2f} $/cwt"
+          f"  ->  fetch ATM: {atm_cwt:.0f} $/cwt | display ATM: {atm_mt:.0f} $/mt")
 
-    # Update atm.json — merge CC into existing keys
+    # Update atm.json — store display ATM in $/mt (MROUND to ATM_MROUND_MT)
     existing = {}
     if ATM_PATH.exists():
         try:
             existing = json.loads(ATM_PATH.read_text())
         except Exception:
             pass
-    existing["CC"]      = round(atm * MT_TO_CWT)  # store rounded ATM in $/mt (matches parquet strikes)
+    existing["CC"]      = float(atm_mt)   # display ATM in $/mt, MROUND(price, ATM_MROUND_MT)
     existing["updated"] = TODAY
     ATM_PATH.write_text(json.dumps(existing))
-    return atm
+    return atm_cwt  # return $/cwt for symbol generation
 
 
 def make_strikes(atm: float) -> list[float]:

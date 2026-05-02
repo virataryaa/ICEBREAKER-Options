@@ -351,7 +351,7 @@ def _ric_ct(strike, month, year, opt):
 
 # ── Commodity tab renderer ─────────────────────────────────────────────────────
 def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
-                         key_prefix, title, ric_fn):
+                         key_prefix, title, ric_fn, display_step=None):
     if df.empty:
         st.info(f"No data available for {title}.")
         return
@@ -361,20 +361,23 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
     atm_updated      = atm_data.get("updated", "—")
 
     # Build ±35-strike centered display window around ATM, ascending, ATM in the middle.
-    # Generate the full ±35 grid from ATM using inferred step; snap to nearest actual
-    # strike where data exists, keep the generated value (empty row) where it doesn't.
+    # Generate the full ±35 grid from ATM; snap each generated strike to the nearest
+    # actual parquet strike within tolerance (shows data), else keep as empty row.
     if atm_val is not None and len(all_strikes_data) > 1:
-        diffs = [all_strikes_data[i+1] - all_strikes_data[i]
-                 for i in range(len(all_strikes_data)-1)]
-        step  = sorted(diffs)[len(diffs)//2]  # median step
+        if display_step is not None:
+            step = display_step
+        else:
+            diffs = [all_strikes_data[i+1] - all_strikes_data[i]
+                     for i in range(len(all_strikes_data)-1)]
+            step = sorted(diffs)[len(diffs)//2]  # median step
         N = 35
         display = []
         for i in range(-N, N+1):
             gen = atm_val + i * step
-            # find nearest actual strike within half a step
+            if gen <= 0:
+                continue
             closest = min(all_strikes_data, key=lambda x: abs(x - gen))
-            display.append(closest if abs(closest - gen) < step * 0.5 else round(gen, 4))
-        # deduplicate while preserving order
+            display.append(closest if abs(closest - gen) < step * 0.6 else round(gen, 4))
         seen = set(); all_strikes = []
         for s in display:
             if s not in seen:
@@ -647,6 +650,7 @@ with tab_cc:
         key_prefix="cc",
         title="CC",
         ric_fn=_ric_cc,
+        display_step=100,
     )
 
 with tab_sb:
