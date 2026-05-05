@@ -174,7 +174,7 @@ def get_pct_pivot(df, month_keys, opt, old_date, new_date, min_oi):
     merged = d1.join(d2, how="outer", lsuffix="_1", rsuffix="_2")
     s1 = pd.to_numeric(merged["settle_1"], errors="coerce")
     s2 = pd.to_numeric(merged["settle_2"], errors="coerce")
-    merged["val"] = ((s2 - s1) / s1.abs()) * 100
+    merged["val"] = np.where(s1.abs() > 0, ((s2 - s1) / s1.abs()) * 100, np.nan)
     v = _valid(df, opt, new_date, min_oi)
     if v is not None:
         merged = merged[merged.index.isin(v)]

@@ -30,7 +30,7 @@ STRIKE_STEP  = 5        # CC ICE symbols use 5pt $/cwt increments
 MT_TO_CWT    = 22.046  # 1 metric ton = 22.046 cwt (100lb units)
 ATM_MROUND_MT = 300    # dashboard ATM snaps to nearest 300 $/mt (display centering only)
 
-FIELDS = ["Settle", "Volume", "Open Interest"]
+FIELDS = ["Settle", "Volume", "Open Interest", "Implied Volatility"]
 
 CODE_TO_MONTH = {
     "F": 1, "G": 2, "H": 3, "J": 4, "K": 5, "M": 6,
@@ -155,6 +155,7 @@ def fetch_batch(symbols: list[str]) -> pd.DataFrame:
                 tmp["settle"] = pd.to_numeric(df[f"{sym}.Settle"], errors="coerce")
                 tmp["volume"] = pd.to_numeric(df.get(f"{sym}.Volume", pd.NA), errors="coerce")
                 tmp["oi"]     = pd.to_numeric(df.get(f"{sym}.Open Interest", pd.NA), errors="coerce")
+                tmp["impvol"] = pd.to_numeric(df.get(f"{sym}.Implied Volatility", pd.NA), errors="coerce")
                 tmp["ric"]    = sym
                 rows.append(tmp)
             return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
@@ -225,8 +226,9 @@ def build() -> pd.DataFrame:
     new_df["strike"]       = new_df["strike"].astype(float)
     new_df["expiry_month"] = new_df["expiry_month"].astype("int64")
     new_df["expiry_year"]  = new_df["expiry_year"].astype("int64")
+    new_df["impvol"]       = new_df["impvol"].astype("Float64")
     new_df = new_df[["date", "settle", "oi", "volume", "ric",
-                     "option_type", "strike", "expiry_month", "expiry_year"]]
+                     "option_type", "strike", "expiry_month", "expiry_year", "impvol"]]
 
     # ICE publishes volume on T+1 — shift back 1 row per RIC to align with trading date.
     new_df = new_df.sort_values(["ric", "date"])
