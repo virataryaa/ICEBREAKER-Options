@@ -184,6 +184,36 @@ def get_pct_pivot(df, month_keys, opt, old_date, new_date, min_oi):
     piv = result.pivot_table(index="strike", columns="mk", values="val", aggfunc="first")
     return _clean(piv, month_keys).sort_index(ascending=False)
 
+def get_iv_pivot(df, month_keys, opt, snap_date, min_oi):
+    """Snapshot of ImpVol by strike × expiry on snap_date."""
+    if "impvol" not in df.columns:
+        return pd.DataFrame()
+    d = (df[(df["date"].dt.date == snap_date) & (df["option_type"] == opt)]
+         [["ric", "impvol"]].set_index("ric"))
+    d["impvol"] = pd.to_numeric(d["impvol"], errors="coerce")
+    meta = _meta(df, opt)
+    result = d.join(meta[["strike", "mk"]]).dropna(subset=["strike", "impvol"])
+    result = result[result["mk"].notna()]
+    piv = result.pivot_table(index="strike", columns="mk", values="impvol", aggfunc="first")
+    return _clean(piv, month_keys).sort_index(ascending=False)
+
+def get_iv_change_pivot(df, month_keys, opt, old_date, new_date, min_oi):
+    """ImpVol change (new − old) by strike × expiry."""
+    if "impvol" not in df.columns:
+        return pd.DataFrame()
+    d1 = (df[(df["date"].dt.date == old_date) & (df["option_type"] == opt)]
+          [["ric", "impvol"]].set_index("ric"))
+    d2 = (df[(df["date"].dt.date == new_date) & (df["option_type"] == opt)]
+          [["ric", "impvol"]].set_index("ric"))
+    merged = d1.join(d2, how="outer", lsuffix="_1", rsuffix="_2")
+    merged["val"] = (pd.to_numeric(merged["impvol_2"], errors="coerce")
+                     - pd.to_numeric(merged["impvol_1"], errors="coerce"))
+    meta = _meta(df, opt)
+    result = merged.join(meta[["strike", "mk"]]).dropna(subset=["strike"])
+    result = result[result["mk"].notna()]
+    piv = result.pivot_table(index="strike", columns="mk", values="val", aggfunc="first")
+    return _clean(piv, month_keys).sort_index(ascending=False)
+
 def get_oi_snapshot_pivot(df, month_keys, opt, snap_date, new_date, min_oi):
     d = (df[(df["date"].dt.date == snap_date) & (df["option_type"] == opt)]
          [["ric", "oi"]].set_index("ric"))
@@ -218,6 +248,19 @@ def px_color(val, mx):
     a = _alpha(val, mx)
     return (f"background:rgba(52,168,83,{a});color:#1a1a2e" if val > 0
             else f"background:rgba(220,75,75,{a});color:#1a1a2e")
+
+def iv_color(val, mx):
+    """ImpVol level — heat map: low=blue, high=orange."""
+    if pd.isna(val) or val == 0: return ""
+    a = round(0.15 + min(float(val) / max(mx, 0.01), 1.0) * 0.65, 2)
+    return f"background:rgba(234,88,12,{a});color:#1a1a2e"
+
+def iv_chg_color(val, mx):
+    """IV change — green=vol fell, red=vol rose."""
+    if pd.isna(val) or val == 0: return ""
+    a = _alpha(val, mx)
+    return (f"background:rgba(220,75,75,{a});color:#1a1a2e" if val > 0
+            else f"background:rgba(52,168,83,{a});color:#1a1a2e")
 
 
 # ── Butterfly HTML ─────────────────────────────────────────────────────────────
@@ -524,7 +567,11 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
         unsafe_allow_html=True
     )
 
-    inner1, inner2 = st.tabs([f"OI Change + Volume", f"Px Change"])
+    has_iv = "impvol" in df.columns and df["impvol"].notna().any()
+    tab_labels = ["OI Change + Volume", "Px Change"] + (["Vol Surface"] if has_iv else [])
+    inner_tabs  = st.tabs(tab_labels)
+    inner1, inner2 = inner_tabs[0], inner_tabs[1]
+    inner3 = inner_tabs[2] if has_iv else None
 
     with inner1:
         cl, cr = st.columns(2)
@@ -651,11 +698,16 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                 if rdf.empty:
                     st.info(f"No data for {ric}")
                 else:
-                    cc1, cc2, cc3 = st.columns(3)
-                    for col, field, label in [
-                        (cc1, "oi", "Open Interest"), (cc2, "volume", "Volume"),
+                    show_iv = has_iv and "impvol" in rdf.columns and rdf["impvol"].notna().any()
+                    cc1, cc2, cc3, cc4 = st.columns(4 if show_iv else 3)
+                    fields = [
+                        (cc1, "oi",     "Open Interest"),
+                        (cc2, "volume", "Volume"),
                         (cc3, "settle", "Settle Price"),
-                    ]:
+                    ]
+                    if show_iv:
+                        fields.append((cc4, "impvol", "Impl. Vol %"))
+                    for col, field, label in fields:
                         s = pd.to_numeric(rdf.set_index("date")[field], errors="coerce").dropna()
                         if not s.empty:
                             col.markdown(f"**{label}**")
@@ -729,6 +781,111 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                                fmt="{:.1f}", footer=False, sfx="%", title=title,
                                fixed_strikes=all_strikes, snap_tol=snap_tol),
                 unsafe_allow_html=True)
+
+    if inner3 is not None:
+        with inner3:
+            # ── Row 1: ImpVol snapshot + IV Change butterflies ────────────────
+            vc1, vc2 = st.columns(2)
+            call_iv     = get_iv_pivot(df, month_keys, "Call", new_date, min_oi)
+            put_iv      = get_iv_pivot(df, month_keys, "Put",  new_date, min_oi)
+            call_iv_chg = get_iv_change_pivot(df, month_keys, "Call", old_date, new_date, min_oi)
+            put_iv_chg  = get_iv_change_pivot(df, month_keys, "Put",  old_date, new_date, min_oi)
+
+            with vc1:
+                st.markdown(f"**ImpVol Snapshot — {new_date.strftime('%d %b %Y')}**")
+                st.markdown(
+                    butterfly_html(call_iv, put_iv, custom_atm, iv_color, month_keys,
+                                   fmt="{:.1f}", sfx="%", footer=False, title=title,
+                                   fixed_strikes=all_strikes, snap_tol=snap_tol),
+                    unsafe_allow_html=True)
+            with vc2:
+                st.markdown(f"**IV Change — {old_date.strftime('%d %b %Y')} → {new_date.strftime('%d %b %Y')}**")
+                st.markdown(
+                    butterfly_html(call_iv_chg, put_iv_chg, custom_atm, iv_chg_color, month_keys,
+                                   fmt="{:+.1f}", sfx="%", footer=False, title=title,
+                                   fixed_strikes=all_strikes, snap_tol=snap_tol),
+                    unsafe_allow_html=True)
+
+            st.divider()
+
+            # ── Row 2: Vol Smile chart ────────────────────────────────────────
+            with st.expander("Vol Smile — ImpVol by Strike", expanded=True):
+                col_labels = {mk: f"{MONTH_NAMES[mk[0]]} '{str(mk[1])[-2:]}" for mk in month_keys}
+                smile_exp  = st.selectbox(
+                    "Expiry", [col_labels[mk] for mk in month_keys],
+                    key=f"{key_prefix}_smile_exp"
+                )
+                mk_lookup_smile = {v: k for k, v in col_labels.items()}
+                sel_mk = mk_lookup_smile.get(smile_exp)
+
+                if sel_mk:
+                    sub_iv = df[
+                        (df["date"].dt.date == new_date) &
+                        (df["expiry_month"] == sel_mk[0]) &
+                        (df["expiry_year"]  == sel_mk[1]) &
+                        df["impvol"].notna()
+                    ].copy()
+
+                    if not sub_iv.empty:
+                        calls_smile = sub_iv[sub_iv["option_type"] == "Call"].sort_values("strike")
+                        puts_smile  = sub_iv[sub_iv["option_type"] == "Put"].sort_values("strike")
+
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=calls_smile["strike"], y=calls_smile["impvol"],
+                            mode="lines+markers", name="Call IV",
+                            line=dict(color="#4285f4", width=2),
+                            marker=dict(size=5)
+                        ))
+                        fig.add_trace(go.Scatter(
+                            x=puts_smile["strike"], y=puts_smile["impvol"],
+                            mode="lines+markers", name="Put IV",
+                            line=dict(color="#dc4b4b", width=2),
+                            marker=dict(size=5)
+                        ))
+                        if custom_atm:
+                            fig.add_vline(x=custom_atm, line_dash="dash",
+                                          line_color="#f59e0b", line_width=1.5,
+                                          annotation_text="ATM", annotation_position="top right")
+                        fig.update_layout(
+                            height=340, margin=dict(l=40, r=20, t=30, b=40),
+                            xaxis_title="Strike", yaxis_title="Implied Vol %",
+                            legend=dict(orientation="h", y=1.1),
+                            plot_bgcolor="#fafafa", paper_bgcolor="#fafafa"
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("No ImpVol data for selected expiry on this date.")
+
+            # ── Row 3: ATM Vol Term Structure ─────────────────────────────────
+            with st.expander("ATM Vol Term Structure — ImpVol at ATM across expiries"):
+                all_d_iv = sorted(df[df["impvol"].notna()]["date"].dt.date.unique())
+                if len(all_d_iv) >= 2:
+                    dr_iv = st.slider("Date Range", min_value=all_d_iv[0], max_value=all_d_iv[-1],
+                                      value=(all_d_iv[0], all_d_iv[-1]), key=f"{key_prefix}_iv_dr")
+                    sub_ts = df[
+                        (df["date"].dt.date >= dr_iv[0]) &
+                        (df["date"].dt.date <= dr_iv[1]) &
+                        df["impvol"].notna()
+                    ].copy()
+
+                    # For each date × expiry, find the strike nearest to ATM and take its IV
+                    sub_ts["mk_label"] = (sub_ts["expiry_month"].map(MONTH_NAMES)
+                                          + " '" + sub_ts["expiry_year"].astype(str).str[-2:])
+                    sub_ts["atm_dist"] = (sub_ts["strike"] - custom_atm).abs()
+                    atm_iv_ts = (sub_ts.sort_values("atm_dist")
+                                       .groupby(["date", "mk_label"])
+                                       .first()
+                                       .reset_index()[["date", "mk_label", "impvol"]])
+                    atm_iv_ts["date"] = pd.to_datetime(atm_iv_ts["date"])
+
+                    pivot_ts = atm_iv_ts.pivot(index="date", columns="mk_label", values="impvol")
+                    pivot_ts.columns.name = None
+                    if not pivot_ts.empty:
+                        st.line_chart(pivot_ts)
+                        st.caption("ImpVol of the strike nearest to ATM for each expiry — tracks term structure of vol over time.")
+                else:
+                    st.info("Not enough ImpVol history to plot term structure.")
 
 
 # ── Main layout ────────────────────────────────────────────────────────────────

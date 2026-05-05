@@ -1,7 +1,8 @@
 """
 Ingest.py -- KC Options (ICE Connect)
 Fetches last 10 days, live options only (OI > 0), upserts into parquet.
-Strike range: ATM +/- 20 strikes (2.5pt increments) centred on %KC 1! last settle.
+Strike range: ATM +/- 20 strikes (2.5pt increments) centred on KC 1! last settle.
+Pre-filters full symbol universe via get_quotes (OI > 0) before fetching timeseries.
 Sequential batches -- no threading (ICE COM is not thread-safe).
 """
 
@@ -21,11 +22,11 @@ ATM_PATH   = Path(__file__).resolve().parent.parent / "Dashboard" / "atm.json"
 TODAY      = datetime.date.today().isoformat()
 FETCH_FROM = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
 RETRIES    = 3
-BATCH_SIZE = 50
+BATCH_SIZE = 100
 N_MONTHS   = 12   # next N calendar months starting from next month (covers full year fwd)
 ATM_WING   = 20   # strikes each side of ATM
 
-FIELDS = ["Settle", "Volume", "Open Interest"]
+FIELDS = ["Settle", "Volume", "Open Interest", "Implied Volatility"]
 
 CODE_TO_MONTH = {
     "F": 1, "G": 2, "H": 3, "J": 4, "K": 5, "M": 6,
@@ -54,12 +55,12 @@ def active_contracts() -> list[tuple[str, int]]:
 def get_atm_strike() -> float:
     """Fetch %KC 1! last settle and round to nearest 2.5pt increment."""
     raw = ice.get_timeseries(
-        ["%KC 1!"], ["Settle"], granularity="D",
+        ["KC 1!"], ["Settle"], granularity="D",
         start_date=(datetime.date.today() - datetime.timedelta(days=5)).isoformat(),
         end_date=TODAY
     )
     if not raw or len(raw) < 2:
-        raise RuntimeError("Could not fetch %KC 1! price for ATM calculation")
+        raise RuntimeError("Could not fetch KC 1! price for ATM calculation")
     # find last non-null settle (today's row may have no close yet)
     last_settle = next(
         (float(row[1]) for row in reversed(raw[1:]) if row[1] is not None),
@@ -69,7 +70,7 @@ def get_atm_strike() -> float:
         raise RuntimeError("No valid settle found for %KC 1!")
     # round to nearest 2.5
     atm = round(last_settle / 2.5) * 2.5
-    print(f"KC 1! last settle: {last_settle:.2f}  ->  ATM strike: {atm:.1f}")
+    print(f"KC 1! last settle: {last_settle:.2f}  ->  ATM: {atm:.1f}")
     ATM_PATH.write_text(json.dumps({"KC": atm, "updated": TODAY}))
     return atm
 
@@ -87,6 +88,17 @@ def make_symbols(month_code: str, year: int, strikes: list[float]) -> list[str]:
         syms.append(f"KC {month_code}{yy}C{r}")
         syms.append(f"KC {month_code}{yy}P{r}")
     return syms
+
+
+def pre_filter(symbols: list[str]) -> list[str]:
+    """Keep only symbols with current OI > 0 via a fast get_quotes snapshot."""
+    active = []
+    for i in range(0, len(symbols), 100):
+        q = ice.get_quotes(symbols[i:i + 100], ["Open Interest"])
+        for row in q[1:]:
+            if row[1] is not None and row[1] > 0:
+                active.append(row[0])
+    return active
 
 
 def parse_symbol(sym: str) -> dict | None:
@@ -127,6 +139,7 @@ def fetch_batch(symbols: list[str]) -> pd.DataFrame:
                 tmp["settle"] = pd.to_numeric(df[f"{sym}.Settle"], errors="coerce")
                 tmp["volume"] = pd.to_numeric(df.get(f"{sym}.Volume", pd.NA), errors="coerce")
                 tmp["oi"]     = pd.to_numeric(df.get(f"{sym}.Open Interest", pd.NA), errors="coerce")
+                tmp["impvol"] = pd.to_numeric(df.get(f"{sym}.Implied Volatility", pd.NA), errors="coerce")
                 tmp["ric"]    = sym
                 rows.append(tmp)
             return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
@@ -145,13 +158,19 @@ def build() -> pd.DataFrame:
     strikes   = make_strikes(atm)
     contracts = active_contracts()
 
-    all_batches = []
+    # Build full universe then pre-filter to live symbols only
+    all_syms = []
     for mc, yr in contracts:
-        syms = make_symbols(mc, yr, strikes)
-        for i in range(0, len(syms), BATCH_SIZE):
-            all_batches.append(syms[i: i + BATCH_SIZE])
+        all_syms.extend(make_symbols(mc, yr, strikes))
 
-    print(f"Fetching last 10 days ({FETCH_FROM} to {TODAY})")
+    print(f"Universe: {len(all_syms)} symbols  ->  pre-filtering via get_quotes...", flush=True)
+    active_syms = pre_filter(all_syms)
+    print(f"Active (OI > 0): {len(active_syms)} / {len(all_syms)}")
+
+    all_batches = [active_syms[i:i + BATCH_SIZE] for i in range(0, len(active_syms), BATCH_SIZE)]
+
+    n_days = (datetime.date.today() - datetime.date.fromisoformat(FETCH_FROM)).days
+    print(f"Fetching last {n_days} days ({FETCH_FROM} to {TODAY})")
     print(f"Contracts: {len(contracts)} | Strikes: ATM {atm:.1f} +/-{ATM_WING} | Batches: {len(all_batches)}")
 
     parts = []
@@ -194,8 +213,15 @@ def build() -> pd.DataFrame:
     new_df["strike"]       = new_df["strike"].astype(float)
     new_df["expiry_month"] = new_df["expiry_month"].astype("int64")
     new_df["expiry_year"]  = new_df["expiry_year"].astype("int64")
+    new_df["impvol"]       = new_df["impvol"].astype("Float64")
     new_df = new_df[["date", "settle", "oi", "volume", "ric",
-                     "option_type", "strike", "expiry_month", "expiry_year"]]
+                     "option_type", "strike", "expiry_month", "expiry_year", "impvol"]]
+
+    # ICE publishes volume on T+1 (publication date), not T (trading date).
+    # Shift volume back 1 row per RIC so it aligns with the correct trading day.
+    # The most recent date will have NaN volume — correct, as it hasn't been published yet.
+    new_df = new_df.sort_values(["ric", "date"])
+    new_df["volume"] = new_df.groupby("ric")["volume"].shift(-1)
 
     # Upsert
     if OUT_PATH.exists():
