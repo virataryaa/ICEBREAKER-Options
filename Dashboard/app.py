@@ -847,9 +847,13 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                             fig.add_vline(x=custom_atm, line_dash="dash",
                                           line_color="#f59e0b", line_width=1.5,
                                           annotation_text="ATM", annotation_position="top right")
+                        all_iv_vals = pd.concat([calls_smile["impvol"], puts_smile["impvol"]]).dropna()
+                        iv_lo = max(0, all_iv_vals.min() - 3)
+                        iv_hi = all_iv_vals.max() + 3
                         fig.update_layout(
                             height=340, margin=dict(l=40, r=20, t=30, b=40),
                             xaxis_title="Strike", yaxis_title="Implied Vol %",
+                            yaxis=dict(range=[iv_lo, iv_hi]),
                             legend=dict(orientation="h", y=1.1),
                             plot_bgcolor="#fafafa", paper_bgcolor="#fafafa"
                         )
@@ -882,7 +886,28 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                     pivot_ts = atm_iv_ts.pivot(index="date", columns="mk_label", values="impvol")
                     pivot_ts.columns.name = None
                     if not pivot_ts.empty:
-                        st.line_chart(pivot_ts)
+                        ts_vals = pivot_ts.values.flatten()
+                        ts_vals = ts_vals[~np.isnan(ts_vals)]
+                        ts_lo   = max(0, float(ts_vals.min()) - 3) if len(ts_vals) else 0
+                        ts_hi   = float(ts_vals.max()) + 3         if len(ts_vals) else 50
+
+                        fig_ts = go.Figure()
+                        colors = ["#4285f4","#dc4b4b","#f59e0b","#34a853","#8b5cf6","#06b6d4","#f97316"]
+                        for i, col in enumerate(pivot_ts.columns):
+                            s = pivot_ts[col].dropna()
+                            fig_ts.add_trace(go.Scatter(
+                                x=s.index, y=s.values,
+                                mode="lines", name=col,
+                                line=dict(color=colors[i % len(colors)], width=1.8)
+                            ))
+                        fig_ts.update_layout(
+                            height=340, margin=dict(l=40, r=20, t=30, b=40),
+                            xaxis_title="Date", yaxis_title="Implied Vol %",
+                            yaxis=dict(range=[ts_lo, ts_hi]),
+                            legend=dict(orientation="h", y=-0.2),
+                            plot_bgcolor="#fafafa", paper_bgcolor="#fafafa"
+                        )
+                        st.plotly_chart(fig_ts, use_container_width=True)
                         st.caption("ImpVol of the strike nearest to ATM for each expiry — tracks term structure of vol over time.")
                 else:
                     st.info("Not enough ImpVol history to plot term structure.")
