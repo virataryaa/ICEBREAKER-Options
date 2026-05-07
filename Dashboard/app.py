@@ -876,6 +876,97 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                     else:
                         st.info("No ImpVol data for selected expiry on this date.")
 
+            # ── Row 2b: Term Structure Snapshot ──────────────────────────────
+            with st.expander("Vol Term Structure — ATM IV across expiries (snapshot)", expanded=True):
+                def _ts_snapshot(snap_date, fut_df, custom_atm):
+                    """ATM IV per expiry on one date. Returns sorted DataFrame."""
+                    if "impvol" not in df.columns:
+                        return pd.DataFrame()
+                    sub = df[(df["date"].dt.date == snap_date) & df["impvol"].notna()].copy()
+                    if sub.empty:
+                        return pd.DataFrame()
+                    sub["mk_label"] = (sub["expiry_month"].map(MONTH_NAMES)
+                                       + " '" + sub["expiry_year"].astype(str).str[-2:])
+                    sub["sort_key"] = sub["expiry_year"] * 100 + sub["expiry_month"]
+
+                    if fut_df is not None and not fut_df.empty:
+                        fut_month_ints = sorted(fut_df["month_int"].dropna().unique().tolist())
+                        unique_exp = sub[["expiry_month","expiry_year"]].drop_duplicates()
+                        exp_to_fut = {}
+                        for _, r in unique_exp.iterrows():
+                            em, ey = int(r.expiry_month), int(r.expiry_year)
+                            fm = next((m for m in fut_month_ints if m >= em), fut_month_ints[0])
+                            fy = ey if any(m >= em for m in fut_month_ints) else ey + 1
+                            exp_to_fut[(em, ey)] = (fm, fy)
+                        sub["_fut_m"] = sub.apply(lambda r: exp_to_fut.get(
+                            (int(r.expiry_month), int(r.expiry_year)), (None, None))[0], axis=1)
+                        sub["_fut_y"] = sub.apply(lambda r: exp_to_fut.get(
+                            (int(r.expiry_month), int(r.expiry_year)), (None, None))[1], axis=1)
+                        fut_day = (fut_df[fut_df["Date"].dt.date == snap_date]
+                                   .rename(columns={"month_int": "_fut_m", "year": "_fut_y"}))
+                        sub = sub.merge(fut_day[["_fut_m", "_fut_y", "settlement"]],
+                                        on=["_fut_m", "_fut_y"], how="left")
+                        sub["settlement"] = sub["settlement"].fillna(custom_atm)
+                        sub["atm_dist"] = (sub["strike"] - sub["settlement"]).abs()
+                    else:
+                        sub["atm_dist"] = (sub["strike"] - custom_atm).abs()
+
+                    rows = []
+                    for (lbl, sk), grp in sub.groupby(["mk_label", "sort_key"]):
+                        atm_s = grp.loc[grp["atm_dist"].idxmin(), "strike"]
+                        atm_g = grp[grp["strike"] == atm_s]
+                        iv_c  = atm_g[atm_g["option_type"] == "Call"]["impvol"].mean()
+                        iv_p  = atm_g[atm_g["option_type"] == "Put"]["impvol"].mean()
+                        rows.append({"mk_label": lbl, "sort_key": sk,
+                                     "iv_call": iv_c, "iv_put": iv_p,
+                                     "iv_avg": float(pd.Series([iv_c, iv_p]).mean())})
+                    return pd.DataFrame(rows).sort_values("sort_key").reset_index(drop=True)
+
+                snap_new = _ts_snapshot(new_date, fut_df, custom_atm)
+                snap_old = _ts_snapshot(old_date, fut_df, custom_atm)
+
+                if snap_new.empty:
+                    st.info("No ImpVol data available for term structure snapshot.")
+                else:
+                    all_snap_vals = pd.concat([
+                        snap_new[["iv_call","iv_put"]].stack(),
+                        snap_old[["iv_call","iv_put"]].stack() if not snap_old.empty else pd.Series(dtype=float)
+                    ]).dropna()
+                    sn_lo = max(0, float(all_snap_vals.min()) - 2)
+                    sn_hi = float(all_snap_vals.max()) + 2
+
+                    fig_sn = go.Figure()
+                    fig_sn.add_trace(go.Scatter(
+                        x=snap_new["mk_label"], y=snap_new["iv_call"],
+                        mode="lines+markers", name=f"Call IV ({new_date})",
+                        line=dict(color="#4285f4", width=2), marker=dict(size=7)
+                    ))
+                    fig_sn.add_trace(go.Scatter(
+                        x=snap_new["mk_label"], y=snap_new["iv_put"],
+                        mode="lines+markers", name=f"Put IV ({new_date})",
+                        line=dict(color="#dc4b4b", width=2), marker=dict(size=7)
+                    ))
+                    if not snap_old.empty:
+                        fig_sn.add_trace(go.Scatter(
+                            x=snap_old["mk_label"], y=snap_old["iv_avg"],
+                            mode="lines+markers", name=f"Avg IV ({old_date})",
+                            line=dict(color="#9ca3af", width=1.5, dash="dash"),
+                            marker=dict(size=5)
+                        ))
+                    fig_sn.update_layout(
+                        height=360, margin=dict(l=40, r=20, t=30, b=60),
+                        xaxis_title="Expiry", yaxis_title="Implied Vol %",
+                        yaxis=dict(range=[sn_lo, sn_hi]),
+                        legend=dict(orientation="h", y=-0.25),
+                        plot_bgcolor="#fafafa", paper_bgcolor="#fafafa"
+                    )
+                    st.plotly_chart(fig_sn, use_container_width=True)
+                    st.caption(
+                        "Call IV and Put IV at the ATM strike for each expiry on the New Date. "
+                        "Dashed grey = average IV on Old Date for comparison. "
+                        "Upward slope = vol contango (normal). Downward = backwardation (crisis)."
+                    )
+
             # ── Row 3: ATM Vol Term Structure ─────────────────────────────────
             with st.expander("ATM Vol Term Structure — ImpVol at ATM across expiries"):
                 all_d_iv = sorted(df[df["impvol"].notna()]["date"].dt.date.unique())
