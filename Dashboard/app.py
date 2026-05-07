@@ -19,12 +19,14 @@ st.set_page_config(page_title="Options Dashboard", layout="wide")
 
 DB_PATH  = Path(__file__).parent.parent / "Database"
 ATM_JSON = Path(__file__).parent / "atm.json"
+FUT_PATH = Path(__file__).parent.parent.parent / "Futures" / "Database"
 
-MONTH_NAMES   = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
-                 7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
-CALL_CODES    = {1:"A",2:"B",3:"C",4:"D",5:"E",6:"F",7:"G",8:"H",9:"I",10:"J",11:"K",12:"L"}
-PUT_CODES     = {1:"M",2:"N",3:"O",4:"P",5:"Q",6:"R",7:"S",8:"T",9:"U",10:"V",11:"W",12:"X"}
-MONTH_TO_CODE = {1:"F",2:"G",3:"H",4:"J",5:"K",6:"M",7:"N",8:"Q",9:"U",10:"V",11:"X",12:"Z"}
+MONTH_NAMES    = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
+                  7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
+CALL_CODES     = {1:"A",2:"B",3:"C",4:"D",5:"E",6:"F",7:"G",8:"H",9:"I",10:"J",11:"K",12:"L"}
+PUT_CODES      = {1:"M",2:"N",3:"O",4:"P",5:"Q",6:"R",7:"S",8:"T",9:"U",10:"V",11:"W",12:"X"}
+MONTH_TO_CODE  = {1:"F",2:"G",3:"H",4:"J",5:"K",6:"M",7:"N",8:"Q",9:"U",10:"V",11:"X",12:"Z"}
+CODE_TO_MONTH_INT = {"F":1,"G":2,"H":3,"J":4,"K":5,"M":6,"N":7,"Q":8,"U":9,"V":10,"X":11,"Z":12}
 
 
 # ── Data loaders ───────────────────────────────────────────────────────────────
@@ -51,6 +53,18 @@ def load_ct():
     df = pd.read_parquet(DB_PATH / "CT_options_ice.parquet")
     df["date"] = pd.to_datetime(df["date"])
     return df
+
+@st.cache_data(ttl=1800)
+def load_fut(name: str) -> pd.DataFrame:
+    """Load futures parquet for per-expiry ATM. Returns empty DF if unavailable (e.g. Streamlit Cloud)."""
+    path = FUT_PATH / f"{name}_futures.parquet"
+    try:
+        df = pd.read_parquet(path)
+        df["Date"] = pd.to_datetime(df["Date"])
+        df["month_int"] = df["month"].map(CODE_TO_MONTH_INT)
+        return df[["Date", "month_int", "year", "settlement"]].dropna(subset=["settlement"])
+    except Exception:
+        return pd.DataFrame()
 
 def load_atm():
     try:
@@ -444,7 +458,7 @@ def get_atm_ts(df: pd.DataFrame) -> pd.DataFrame:
 # ── Commodity tab renderer ─────────────────────────────────────────────────────
 def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                          key_prefix, title, ric_fn, display_step=None, mround_default=None,
-                         ingest_note=""):
+                         ingest_note="", fut_df=None):
     if df.empty:
         st.info(f"No data available for {title}.")
         return
@@ -877,7 +891,34 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                     # For each date × expiry, find the strike nearest to ATM and take its IV
                     sub_ts["mk_label"] = (sub_ts["expiry_month"].map(MONTH_NAMES)
                                           + " '" + sub_ts["expiry_year"].astype(str).str[-2:])
-                    sub_ts["atm_dist"] = (sub_ts["strike"] - custom_atm).abs()
+
+                    # Per-expiry ATM: use each expiry's own futures settlement price.
+                    # Serial months (e.g. KC M/Q) map to the next available futures month.
+                    # Falls back to custom_atm if futures parquet not available.
+                    if fut_df is not None and not fut_df.empty:
+                        fut_month_ints = sorted(fut_df["month_int"].dropna().unique().tolist())
+                        unique_exp = sub_ts[["expiry_month","expiry_year"]].drop_duplicates()
+                        exp_to_fut = {}
+                        for _, r in unique_exp.iterrows():
+                            em, ey = int(r.expiry_month), int(r.expiry_year)
+                            fm = next((m for m in fut_month_ints if m >= em), fut_month_ints[0])
+                            fy = ey if any(m >= em for m in fut_month_ints) else ey + 1
+                            exp_to_fut[(em, ey)] = (fm, fy)
+                        sub_ts["_fut_m"] = sub_ts.apply(
+                            lambda r: exp_to_fut.get((int(r.expiry_month), int(r.expiry_year)), (None, None))[0], axis=1)
+                        sub_ts["_fut_y"] = sub_ts.apply(
+                            lambda r: exp_to_fut.get((int(r.expiry_month), int(r.expiry_year)), (None, None))[1], axis=1)
+                        fut_settle = (fut_df.rename(columns={"Date": "date"})
+                                      .rename(columns={"month_int": "_fut_m", "year": "_fut_y"}))
+                        sub_ts = sub_ts.merge(
+                            fut_settle[["date", "_fut_m", "_fut_y", "settlement"]],
+                            on=["date", "_fut_m", "_fut_y"], how="left"
+                        )
+                        sub_ts["settlement"] = sub_ts["settlement"].fillna(custom_atm)
+                        sub_ts["atm_dist"] = (sub_ts["strike"] - sub_ts["settlement"]).abs()
+                    else:
+                        sub_ts["atm_dist"] = (sub_ts["strike"] - custom_atm).abs()
+
                     atm_iv_ts = (sub_ts.sort_values("atm_dist")
                                        .groupby(["date", "mk_label"])
                                        .first()
@@ -909,7 +950,8 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                             plot_bgcolor="#fafafa", paper_bgcolor="#fafafa"
                         )
                         st.plotly_chart(fig_ts, use_container_width=True)
-                        st.caption("ImpVol of the strike nearest to ATM for each expiry — tracks term structure of vol over time.")
+                        src = "per-expiry futures settlement" if fut_df is not None and not fut_df.empty else "ATM snap (futures unavailable)"
+                        st.caption(f"ATM anchored to {src} for each expiry — serial months mapped to next available futures contract.")
                 else:
                     st.info("Not enough ImpVol history to plot term structure.")
 
@@ -928,6 +970,11 @@ atm_cc  = atm_data.get("CC")
 atm_sb  = atm_data.get("SB")
 atm_ct  = atm_data.get("CT")
 
+fut_kc = load_fut("kc")
+fut_cc = load_fut("cc")
+fut_sb = load_fut("sb")
+fut_ct = load_fut("ct")
+
 with tab_kc:
     atm_kc_lbl = (f"{int(atm_kc) if atm_kc == int(atm_kc) else atm_kc}"
                   if atm_kc is not None else "—")
@@ -937,6 +984,7 @@ with tab_kc:
         key_prefix="kc", title="KC", ric_fn=_ric_kc,
         mround_default=50,
         ingest_note="MRound=50 ¢/lb for ATM snap | Step=2.5 ¢/lb (symbol unit 25)",
+        fut_df=fut_kc,
     )
 
 with tab_cc:
@@ -947,6 +995,7 @@ with tab_cc:
         key_prefix="cc", title="CC", ric_fn=_ric_cc,
         display_step=100, mround_default=300,
         ingest_note="MRound=300 $/mt for ATM snap | Step=5 $/cwt ≈ 110 $/mt in parquet (ICE native)",
+        fut_df=fut_cc,
     )
 
 with tab_sb:
@@ -957,6 +1006,7 @@ with tab_sb:
         key_prefix="sb", title="SB", ric_fn=_ric_sb,
         mround_default=0.25,
         ingest_note="MRound=0.25 cts/lb for ATM snap | Step=0.25 cts/lb (symbol unit 25 = 1/100 cts/lb)",
+        fut_df=fut_sb,
     )
 
 with tab_ct:
@@ -967,5 +1017,6 @@ with tab_ct:
         key_prefix="ct", title="CT", ric_fn=_ric_ct,
         mround_default=1,
         ingest_note="MRound=1 cts/lb for ATM snap | Step=1 cts/lb (integer strikes)",
+        fut_df=fut_ct,
     )
 
