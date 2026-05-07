@@ -925,6 +925,17 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                 snap_new = _ts_snapshot(new_date, fut_df, custom_atm)
                 snap_old = _ts_snapshot(old_date, fut_df, custom_atm)
 
+                # OI per expiry on new_date
+                oi_snap = (
+                    df[df["date"].dt.date == new_date]
+                    .assign(mk_label=lambda d: d["expiry_month"].map(MONTH_NAMES)
+                                               + " '" + d["expiry_year"].astype(str).str[-2:],
+                            sort_key=lambda d: d["expiry_year"] * 100 + d["expiry_month"])
+                    .groupby(["mk_label", "sort_key"], as_index=False)["oi"]
+                    .sum()
+                    .sort_values("sort_key")
+                )
+
                 if snap_new.empty:
                     st.info("No ImpVol data available for term structure snapshot.")
                 else:
@@ -936,35 +947,53 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                     sn_hi = float(all_snap_vals.max()) + 2
 
                     fig_sn = go.Figure()
+
+                    # OI bars on secondary axis — plotted first so IV lines sit on top
+                    if not oi_snap.empty:
+                        fig_sn.add_trace(go.Bar(
+                            x=oi_snap["mk_label"], y=oi_snap["oi"],
+                            name="Total OI", yaxis="y2",
+                            marker_color="rgba(156,163,175,0.35)",
+                            marker_line=dict(color="rgba(156,163,175,0.6)", width=1),
+                            showlegend=True
+                        ))
+
                     fig_sn.add_trace(go.Scatter(
                         x=snap_new["mk_label"], y=snap_new["iv_call"],
                         mode="lines+markers", name=f"Call IV ({new_date})",
-                        line=dict(color="#4285f4", width=2), marker=dict(size=7)
+                        line=dict(color="#4285f4", width=2), marker=dict(size=7),
+                        yaxis="y1"
                     ))
                     fig_sn.add_trace(go.Scatter(
                         x=snap_new["mk_label"], y=snap_new["iv_put"],
                         mode="lines+markers", name=f"Put IV ({new_date})",
-                        line=dict(color="#dc4b4b", width=2), marker=dict(size=7)
+                        line=dict(color="#dc4b4b", width=2), marker=dict(size=7),
+                        yaxis="y1"
                     ))
                     if not snap_old.empty:
                         fig_sn.add_trace(go.Scatter(
                             x=snap_old["mk_label"], y=snap_old["iv_avg"],
                             mode="lines+markers", name=f"Avg IV ({old_date})",
                             line=dict(color="#9ca3af", width=1.5, dash="dash"),
-                            marker=dict(size=5)
+                            marker=dict(size=5), yaxis="y1"
                         ))
+
                     fig_sn.update_layout(
-                        height=360, margin=dict(l=40, r=20, t=30, b=60),
-                        xaxis_title="Expiry", yaxis_title="Implied Vol %",
-                        yaxis=dict(range=[sn_lo, sn_hi]),
-                        legend=dict(orientation="h", y=-0.25),
-                        plot_bgcolor="#fafafa", paper_bgcolor="#fafafa"
+                        height=380, margin=dict(l=40, r=60, t=30, b=60),
+                        xaxis_title="Expiry",
+                        yaxis=dict(title="Implied Vol %", range=[sn_lo, sn_hi], side="left"),
+                        yaxis2=dict(title="Total OI (lots)", overlaying="y", side="right",
+                                    showgrid=False, rangemode="tozero"),
+                        legend=dict(orientation="h", y=-0.28),
+                        plot_bgcolor="#fafafa", paper_bgcolor="#fafafa",
+                        barmode="overlay"
                     )
                     st.plotly_chart(fig_sn, use_container_width=True)
                     st.caption(
-                        "Call IV and Put IV at the ATM strike for each expiry on the New Date. "
-                        "Dashed grey = average IV on Old Date for comparison. "
-                        "Upward slope = vol contango (normal). Downward = backwardation (crisis)."
+                        "Call IV and Put IV at ATM strike per expiry (left axis). "
+                        "Grey bars = total OI across all strikes (right axis) — "
+                        "low-OI expiries have unreliable vol readings. "
+                        "Upward slope = contango. Downward = backwardation."
                     )
 
             # ── Row 3: ATM Vol Term Structure ─────────────────────────────────
