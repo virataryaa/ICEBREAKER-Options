@@ -1049,7 +1049,7 @@ def render_commodity_tab(df, atm_val, atm_label, old_date, new_date,
                     pivot_ts.columns.name = None
                     if not pivot_ts.empty:
                         ts_vals = pivot_ts.values.flatten()
-                        ts_vals = ts_vals[~np.isnan(ts_vals)]
+                        ts_vals = ts_vals[~pd.isna(ts_vals)]
                         ts_lo   = max(0, float(ts_vals.min()) - 3) if len(ts_vals) else 0
                         ts_hi   = float(ts_vals.max()) + 3         if len(ts_vals) else 50
 
