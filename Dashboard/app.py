@@ -19,7 +19,7 @@ st.set_page_config(page_title="Options Dashboard", layout="wide")
 
 DB_PATH  = Path(__file__).parent.parent / "Database"
 ATM_JSON = Path(__file__).parent / "atm.json"
-FUT_PATH = Path(__file__).parent.parent.parent / "Futures" / "Database"
+FUT_PATH = Path(__file__).parent.parent / "Database" / "Futures"
 
 MONTH_NAMES    = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
                   7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}

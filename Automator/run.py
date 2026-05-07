@@ -3,6 +3,7 @@ run.py -- ICEBREAKER Options daily automator
 Runs KC + CC ingest, commits updated parquets + atm.json, pushes to GitHub, sends email.
 """
 
+import shutil
 import subprocess
 import sys
 import datetime
@@ -25,6 +26,12 @@ PARQUET_CT   = ROOT / "Database" / "CT_options_ice.parquet"
 ATM_JSON     = ROOT / "Dashboard" / "atm.json"
 LOG_FILE     = Path(__file__).resolve().parent / "run_log.txt"
 PYTHON       = sys.executable
+
+# Futures parquets — source (separate LSEG pipeline) and dest inside this repo
+FUT_SRC  = ROOT.parent / "Futures" / "Database"
+FUT_DEST = ROOT / "Database" / "Futures"
+FUT_FILES = ["kc_futures.parquet", "cc_futures.parquet",
+             "sb_futures.parquet", "ct_futures.parquet"]
 
 EMAIL_TO = "virat.arya@etgworld.com"
 
@@ -59,6 +66,23 @@ def run_ingest(script: Path, label: str) -> tuple[bool, str]:
     )
     output = result.stdout + result.stderr
     return result.returncode == 0, output
+
+
+def copy_futures() -> list[Path]:
+    """Copy latest futures parquets from LSEG pipeline into Options/Database/Futures/.
+    Returns list of successfully copied destination paths."""
+    FUT_DEST.mkdir(parents=True, exist_ok=True)
+    copied = []
+    for fname in FUT_FILES:
+        src = FUT_SRC / fname
+        dst = FUT_DEST / fname
+        if src.exists():
+            shutil.copy2(src, dst)
+            log(f"  Copied {fname}")
+            copied.append(dst)
+        else:
+            log(f"  [WARN] {fname} not found at {src} — skipping")
+    return copied
 
 
 def git_push(files: list[Path]) -> tuple[bool, str]:
@@ -117,8 +141,16 @@ def main():
         )
         sys.exit(1)
 
+    # Copy latest futures parquets into repo for Streamlit Cloud access
+    log("Copying futures parquets...")
+    fut_copied = copy_futures()
+    log(f"Futures copied: {len(fut_copied)}/{len(FUT_FILES)}")
+
     # Git commit + push
-    pushed, git_out = git_push([PARQUET_KC, PARQUET_CC, PARQUET_SB, PARQUET_CT, ATM_JSON])
+    pushed, git_out = git_push([
+        PARQUET_KC, PARQUET_CC, PARQUET_SB, PARQUET_CT, ATM_JSON,
+        *fut_copied,
+    ])
     log("Git push: OK" if pushed else "Git push: FAILED (may be nothing new)")
     for line in git_out.strip().splitlines():
         log(f"  {line}")
