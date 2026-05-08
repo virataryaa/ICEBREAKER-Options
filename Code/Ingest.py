@@ -217,11 +217,12 @@ def build() -> pd.DataFrame:
     new_df = new_df[["date", "settle", "oi", "volume", "ric",
                      "option_type", "strike", "expiry_month", "expiry_year", "impvol"]]
 
-    # ICE publishes volume on T+1 (publication date), not T (trading date).
-    # Shift volume back 1 row per RIC so it aligns with the correct trading day.
-    # The most recent date will have NaN volume — correct, as it hasn't been published yet.
+    # ICE publishes volume and OI on T+1 (publication date), not T (trading date).
+    # Shift both back 1 row per RIC so they align with the correct trading day.
+    # The most recent date will have NaN volume/OI — correct, as they haven't been published yet.
     new_df = new_df.sort_values(["ric", "date"])
     new_df["volume"] = new_df.groupby("ric")["volume"].shift(-1)
+    new_df["oi"]     = new_df.groupby("ric")["oi"].shift(-1)
 
     # Upsert
     if OUT_PATH.exists():
