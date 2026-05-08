@@ -222,9 +222,10 @@ def build() -> pd.DataFrame:
     new_df = new_df[["date", "settle", "oi", "volume", "ric",
                      "option_type", "strike", "expiry_month", "expiry_year", "impvol"]]
 
-    # ICE publishes volume on T+1 — shift back 1 row per RIC to align with trading date.
+    # ICE publishes volume and OI on T+1 — shift both back 1 row per RIC to align with trading date.
     new_df = new_df.sort_values(["ric", "date"])
     new_df["volume"] = new_df.groupby("ric")["volume"].shift(-1)
+    new_df["oi"]     = new_df.groupby("ric")["oi"].shift(-1)
 
     # Upsert
     if OUT_PATH.exists():
